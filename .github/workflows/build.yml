@@ -32,17 +32,7 @@ jobs:
         if: matrix.os == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y sqlite3 libsqlite3-dev build-essential
-
-      - name: Install dependencies (macOS)
-        if: matrix.os == 'darwin'
-        run: |
-          brew install sqlite3
-
-      - name: Install dependencies (Windows)
-        if: matrix.os == 'windows'
-        run: |
-          choco install sqlite
+          sudo apt-get install -y libsqlite3-dev build-essential
 
       - name: Build SQLite (Unix)
         if: matrix.os != 'windows'
