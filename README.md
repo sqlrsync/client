@@ -14,6 +14,15 @@ cd ../bridge; make build
 cd ../client; make build
 ```
 
+## Pre-compiled Binaries
+
+Pre-compiled binaries for various platforms are available in the [releases](https://github.com/sqlrsync/client/releases) section of the GitHub repository.
+
+* Mac (since 2020): sqlrsync-darwin-arm64
+* Mac (before 2020): sqlrsync-darwin-amd64
+* Linux: sqlrsync-linux-amd64
+* Windows: sqlrsync-windows-amd64.exe
+
 ## Running
 
 Run ./bin/sqlrsync <params>
