@@ -1,13 +1,14 @@
-#define SQLITE_RSYNC_NO_MAIN
-#define SQLITE_RSYNC_USE_H
-
 #include "sqlite_rsync.h"
 #include "sqlite_rsync_wrapper.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <process.h>
+#else
 #include <unistd.h>
 #include <sys/wait.h>
+#endif
 
 #ifndef SQLITE_RSYNC_WRAPPER_C_INCLUDED
 #define SQLITE_RSYNC_WRAPPER_C_INCLUDED

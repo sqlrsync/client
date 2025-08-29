@@ -15,8 +15,6 @@
 ** similar to "rsync".
 */
 
-#define SQLITE_RSYNC_USE_H
-
 #ifndef SQLITE_RSYNC_H_INCLUDED
 #define SQLITE_RSYNC_H_INCLUDED
 
