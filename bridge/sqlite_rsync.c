@@ -1,5 +1,4 @@
 #define SQLITE_ENABLE_DBPAGE_VTAB 1
-#define SQLITE_RSYNC_USE_H
 
 #ifndef SQLITE_RSYNC_C_INCLUDED
 #define SQLITE_RSYNC_C_INCLUDED
@@ -125,7 +124,7 @@ static void win32_fatal_error(const char *zMsg)
   fprintf(stderr, "%s", zMsg);
   exit(1);
 }
-extern int _open_osfhandle(intptr_t, int);
+#include <io.h> /* For _open_osfhandle */
 #else
 #include <unistd.h>
 #include <signal.h>
@@ -174,7 +173,7 @@ extern int sqlite3_sha_init(
 **
 ** Return the number of errors.
 */
-static int win32_create_child_process(
+int win32_create_child_process(
     wchar_t *zCmd,   /* The command that the child process will run */
     HANDLE hIn,      /* Standard input */
     HANDLE hOut,     /* Standard output */
