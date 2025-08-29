@@ -16,7 +16,7 @@ jobs:
       matrix:
         include:
           - os: windows
-            runs-on: warp-windows-latest-2204-4x
+            runs-on: warp-windows-latest-x64-4x
             arch: amd64
 
     steps:
