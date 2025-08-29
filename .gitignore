@@ -1,0 +1,10 @@
+**/*.log
+**/*.db-shm
+**/*.db-wal
+**/bin
+**/*.db
+**/*.sqlite
+**/*-sqlrsync
+
+.claude/
+**/.claude/
