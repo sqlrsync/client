@@ -49,6 +49,12 @@ jobs:
           make
           make install
 
+      - name: Setup MSVC (Windows)
+        if: matrix.os == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Build SQLite (Windows)
         if: matrix.os == 'windows'
         run: |
@@ -59,10 +65,19 @@ jobs:
             Rename-Item sqlite-autoconf-3450100 sqlite-latest
           }
           cd sqlite-latest
-          # Use MSYS2/MinGW for Windows build
-          bash -c "./configure --prefix=$(pwd)/../install --enable-static --disable-shared 'CFLAGS=-DSQLITE_ENABLE_DBPAGE_VTAB=1 -O2'"
-          bash -c "make"
-          bash -c "make install"
+          # Use Visual Studio tools for Windows build as recommended by SQLite docs
+          nmake /f Makefile.msc clean
+          nmake /f Makefile.msc sqlite3.c
+          nmake /f Makefile.msc sqlite3.exe
+          # Create install directory structure
+          New-Item -ItemType Directory -Force -Path "../install/bin"
+          New-Item -ItemType Directory -Force -Path "../install/include"
+          New-Item -ItemType Directory -Force -Path "../install/lib"
+          # Copy built files to install directory
+          Copy-Item "sqlite3.exe" "../install/bin/"
+          Copy-Item "sqlite3.h" "../install/include/"
+          Copy-Item "sqlite3ext.h" "../install/include/"
+          if (Test-Path "sqlite3.lib") { Copy-Item "sqlite3.lib" "../install/lib/" }
 
       - name: Build Bridge
         run: |
@@ -107,8 +122,8 @@ jobs:
         if: matrix.os == 'windows'
         run: |
           cd client
-          # Use make with MSYS2/MinGW
-          bash -c "make build"
+          # MSVC environment is already set up from previous step
+          make build
 
       - name: Create release directory
         run: |
