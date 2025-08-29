@@ -15,17 +15,8 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: linux
-            runs-on: ubuntu-latest
-            arch: amd64
-          - os: darwin
-            runs-on: macos-latest
-            arch: amd64
-          - os: darwin
-            runs-on: macos-latest
-            arch: arm64
           - os: windows
-            runs-on: windows-latest
+            runs-on: warp-windows-latest-2204-4x
             arch: amd64
 
     steps:
