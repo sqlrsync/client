@@ -17,10 +17,10 @@ jobs:
         include:
           - os: darwin
             runs-on: macos-latest
-            arch: amd64
-          - os: darwin
-            runs-on: macos-latest
             arch: arm64
+          - os: linux
+            runs-on: ubuntu-latest
+            arch: amd64
 
     steps:
       - name: Checkout code
