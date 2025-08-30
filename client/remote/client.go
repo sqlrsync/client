@@ -238,7 +238,8 @@ func (c *Client) Connect() error {
 	c.logger.Info("Connecting to remote server", zap.String("url", c.config.ServerURL))
 
 	u, err := url.Parse(c.config.ServerURL)
-	if err != nil {
+	if err != nil || !strings.HasPrefix(u.Scheme, "ws") {
+		fmt.Println("Server should be in the format: wss://server.com")
 		return fmt.Errorf("invalid server URL: %w", err)
 	}
 
@@ -252,14 +253,19 @@ func (c *Client) Connect() error {
 	defer connectCancel()
 
 	headers := http.Header{}
-	headers.Set("Authorization", c.config.AuthToken)
+	if c.config.AuthToken == "" || len(c.config.AuthToken) <= 20 {
+		return fmt.Errorf("invalid authtoken: %s", c.config.AuthToken)
+	} else {
+		headers.Set("Authorization", c.config.AuthToken)
+	}
 
 	conn, response, err := dialer.DialContext(connectCtx, u.String(), headers)
-	defer response.Body.Close()
 	if err != nil {
+		fmt.Println("Failed to connect:", err)
 		respStr, _ := io.ReadAll(response.Body)
 		return fmt.Errorf("%s", respStr)
 	}
+		defer response.Body.Close()
 
 	c.mu.Lock()
 	c.conn = conn
