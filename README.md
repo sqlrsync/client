@@ -26,3 +26,33 @@ Pre-compiled binaries for various platforms are available in the [releases](http
 ## Running
 
 Run ./bin/sqlrsync <params>
+
+## Stored Settings
+
+Settings and defaults are stored in your user directory at ~/.config/sqlrsync.  Within that directory, there are two files:
+
+1) defaults.toml
+   Contains default settings for all sqlrsync databases, like server URL, public/private, to generate a new unique clientSideEncryptionKey
+
+2) local-secrets.toml
+   Contains this-machine-specific settings, including the path to the local SQLite files, push keys, and encryption keys.
+
+```toml
+[local]
+# When a new SQLRsync Replica is created on the server, we can use this prefix to identify this machine
+hostname = "homelab3"
+defaultClientSideEncryptionKey = ""
+
+[[sqlrsync-databases]]
+path = "/home/matt/webapps/hedgedoc/data/data.db"
+private-push-key = "abcd1234abcd1234"
+lastUpdated = "2023-01-01T00:00:00Z"
+clientSideEncryptionKey = ""
+
+[[sqlrsync-databases]]
+path = "/home/matt/webapps/wikijs/data/another.db"
+private-push-key = "efgh5678efgh5678"
+lastUpdated = "2023-01-01T00:00:00Z"
+clientSideEncryptionKey = ""
+```
+

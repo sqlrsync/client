@@ -187,20 +187,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		path := args[0]
 		if isLocal(path) {
 			// IF ORIGIN:LOCAL (no REPLICA) - push to default remote path
-			config, err := LoadDefaultSecretsConfig()
-			if err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("failed to load config: %w", err)
-			}
-
-			dbname := filepath.Base(path)
-			var remotePath string
-			if config != nil && config.Config.DefaultPrefix != "" {
-				remotePath = config.Config.DefaultPrefix + "/" + dbname
-			} else {
-				remotePath = dbname
-			}
-
-			return runPushSync(path, remotePath)
+			return runPushSync(path, "")
 		} else {
 			// IF REPLICA:REMOTE (no ORIGIN) - pull to default local name
 			dbname := filepath.Base(path)
@@ -272,7 +259,7 @@ func runPushSync(localPath string, remotePath string) error {
 
 	// Check if we have a namespace push token
 	if config.GetPrivateToken() == "" {
-		fmt.Print("No namespace push token found. Please enter your namespace push token: ")
+		fmt.Print("A Namespace Push Key is required. Visit https://sqlrsync.com/namespaces?getkey.  Enter the Namespace Push Key: ")
 		reader := bufio.NewReader(os.Stdin)
 		token, err := reader.ReadString('\n')
 		if err != nil {
@@ -421,6 +408,39 @@ func runPullSync(remotePath string, localPath string) error {
 		if !isValidVersion(version) {
 			return fmt.Errorf("invalid version format: %s", version)
 		}
+	}
+
+		// Load or create secrets config
+	config, err := LoadDefaultSecretsConfig()
+	if err != nil {
+		// If config doesn't exist or parent directories don't exist, create a new one
+		config = &SecretsConfig{
+			Config: Config{},
+			Dbs:    make(map[string]DatabaseConfig),
+		}
+	}
+		// Check if we have a namespace push token
+	if config.GetPrivateToken() == "" {
+		fmt.Print("A Namespace Push Key is required. Visit https://sqlrsync.com/namespaces?getkey.  Enter the Namespace Push Key: ")
+		reader := bufio.NewReader(os.Stdin)
+		token, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("failed to read namespace push token: %w", err)
+		}
+		token = strings.TrimSpace(token)
+
+		if token == "" {
+			return fmt.Errorf("namespace push token cannot be empty")
+		}
+
+		config.SetPrivateToken(token)
+
+		// Save the updated config
+		if err := SaveDefaultSecretsConfig(config); err != nil {
+			return fmt.Errorf("failed to save secrets config: %w", err)
+		}
+
+		fmt.Println("Namespace push token saved to ~/.config/sqlrsync/secrets.yml")
 	}
 
 	// Create remote client for WebSocket transport
