@@ -247,38 +247,56 @@ func runPushSync(localPath string, remotePath string) error {
 		return fmt.Errorf("database file does not exist: %s", localPath)
 	}
 
-	// Load or create secrets config
-	config, err := LoadDefaultSecretsConfig()
+	// Load defaults config
+	defaultsConfig, err := LoadDefaultsConfig()
 	if err != nil {
-		// If config doesn't exist or parent directories don't exist, create a new one
-		config = &SecretsConfig{
-			Config: Config{},
-			Dbs:    make(map[string]DatabaseConfig),
+		return fmt.Errorf("failed to load defaults config: %w", err)
+	}
+
+	// Load local secrets config
+	localSecretsConfig, err := LoadLocalSecretsConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load local secrets config: %w", err)
+	}
+
+	// Get absolute path for the local database
+	absLocalPath, err := filepath.Abs(localPath)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path: %w", err)
+	}
+
+	// Find or create database entry
+	dbConfig := localSecretsConfig.FindDatabaseByPath(absLocalPath)
+	if dbConfig == nil {
+		// Create new database entry
+		dbConfig = &SQLRsyncDatabase{
+			Path: absLocalPath,
 		}
 	}
 
-	// Check if we have a namespace push token
-	if config.GetPrivateToken() == "" {
-		fmt.Print("A Namespace Push Key is required. Visit https://sqlrsync.com/namespaces?getkey.  Enter the Namespace Push Key: ")
+	// Check if we have a push key for this database
+	if dbConfig.PrivatePushKey == "" && authToken == "" {
+		fmt.Print("A Push Key is required for this database. Enter the Push Key: ")
 		reader := bufio.NewReader(os.Stdin)
 		token, err := reader.ReadString('\n')
 		if err != nil {
-			return fmt.Errorf("failed to read namespace push token: %w", err)
+			return fmt.Errorf("failed to read push key: %w", err)
 		}
 		token = strings.TrimSpace(token)
 
 		if token == "" {
-			return fmt.Errorf("namespace push token cannot be empty")
+			return fmt.Errorf("push key cannot be empty")
 		}
 
-		config.SetPrivateToken(token)
+		dbConfig.PrivatePushKey = token
+	}
 
-		// Save the updated config
-		if err := SaveDefaultSecretsConfig(config); err != nil {
-			return fmt.Errorf("failed to save secrets config: %w", err)
-		}
-
-		fmt.Println("Namespace push token saved to ~/.config/sqlrsync/secrets.yml")
+	// Use server from database config, or defaults if not set
+	if dbConfig.Server == "" {
+		dbConfig.Server = defaultsConfig.Defaults.Server
+	}
+	if serverURL == "" {
+		serverURL = dbConfig.Server
 	}
 
 	logger.Info("Starting push synchronization to sqlrsync.com",
@@ -298,8 +316,8 @@ func runPushSync(localPath string, remotePath string) error {
 	}
 	defer localClient.Close()
 
-	if len(authToken) < 20 {
-		authToken = config.GetPrivateToken()
+	if authToken == "" {
+		authToken = dbConfig.PrivatePushKey
 	}
 
 	// Create remote client for WebSocket transport
@@ -338,6 +356,15 @@ func runPushSync(localPath string, remotePath string) error {
 	// Perform the sync by bridging local and remote
 	if err := performPushSync(localClient, remoteClient); err != nil {
 		return fmt.Errorf("push synchronization failed: %w", err)
+	}
+
+	// Update database config with latest info
+	dbConfig.LastUpdated = time.Now()
+	localSecretsConfig.UpdateOrAddDatabase(*dbConfig)
+
+	// Save the updated config
+	if err := SaveLocalSecretsConfig(localSecretsConfig); err != nil {
+		logger.Warn("Failed to save local secrets config", zap.Error(err))
 	}
 
 	logger.Info("Push synchronization completed successfully")
@@ -410,37 +437,39 @@ func runPullSync(remotePath string, localPath string) error {
 		}
 	}
 
-		// Load or create secrets config
-	config, err := LoadDefaultSecretsConfig()
+	// Load defaults config
+	defaultsConfig, err := LoadDefaultsConfig()
 	if err != nil {
-		// If config doesn't exist or parent directories don't exist, create a new one
-		config = &SecretsConfig{
-			Config: Config{},
-			Dbs:    make(map[string]DatabaseConfig),
+		return fmt.Errorf("failed to load defaults config: %w", err)
+	}
+
+	// Load local secrets config
+	localSecretsConfig, err := LoadLocalSecretsConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load local secrets config: %w", err)
+	}
+
+	// Get absolute path for the local database
+	absLocalPath, err := filepath.Abs(localPath)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path: %w", err)
+	}
+
+	// Find or create database entry
+	dbConfig := localSecretsConfig.FindDatabaseByPath(absLocalPath)
+	if dbConfig == nil {
+		// Create new database entry
+		dbConfig = &SQLRsyncDatabase{
+			Path: absLocalPath,
 		}
 	}
-		// Check if we have a namespace push token
-	if config.GetPrivateToken() == "" {
-		fmt.Print("A Namespace Push Key is required. Visit https://sqlrsync.com/namespaces?getkey.  Enter the Namespace Push Key: ")
-		reader := bufio.NewReader(os.Stdin)
-		token, err := reader.ReadString('\n')
-		if err != nil {
-			return fmt.Errorf("failed to read namespace push token: %w", err)
-		}
-		token = strings.TrimSpace(token)
 
-		if token == "" {
-			return fmt.Errorf("namespace push token cannot be empty")
-		}
-
-		config.SetPrivateToken(token)
-
-		// Save the updated config
-		if err := SaveDefaultSecretsConfig(config); err != nil {
-			return fmt.Errorf("failed to save secrets config: %w", err)
-		}
-
-		fmt.Println("Namespace push token saved to ~/.config/sqlrsync/secrets.yml")
+	// Use server from database config, or defaults if not set
+	if dbConfig.Server == "" {
+		dbConfig.Server = defaultsConfig.Defaults.Server
+	}
+	if serverURL == "" {
+		serverURL = dbConfig.Server
 	}
 
 	// Create remote client for WebSocket transport
@@ -494,6 +523,15 @@ sqlrsync %s --pullKey=%s
 		}
 	}
 
+	// Update database config with latest info
+	dbConfig.LastUpdated = time.Now()
+	localSecretsConfig.UpdateOrAddDatabase(*dbConfig)
+
+	// Save the updated config
+	if err := SaveLocalSecretsConfig(localSecretsConfig); err != nil {
+		logger.Warn("Failed to save local secrets config", zap.Error(err))
+	}
+
 	logger.Info("Pull synchronization completed successfully")
 	return nil
 }
@@ -543,8 +581,8 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.Flags().StringVar(&authToken, "pullKey", "", "Read-only access key to retrieve a database from sqlrsync.com")
-	rootCmd.Flags().StringVarP(&serverURL, "server", "s", "wss://sqlrsync-workers.matt4659.workers.dev", "Server URL for push/pull operations")
+	rootCmd.Flags().StringVar(&authToken, "authKey", "", "Authentication key for push/pull operations")
+	rootCmd.Flags().StringVarP(&serverURL, "server", "s", "", "Server URL for push/pull operations (defaults to value in config)")
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging")
 	rootCmd.Flags().BoolVar(&newReadToken, "storeNewReadToken", true, "After syncing, the server creates a new read-only token that is stored in the -sqlrsync file adjacent to the local database")
 	rootCmd.Flags().BoolVar(&dryRun, "dry", false, "Perform a dry run without making changes")

@@ -18,41 +18,67 @@ cd ../client; make build
 
 Pre-compiled binaries for various platforms are available in the [releases](https://github.com/sqlrsync/client/releases) section of the GitHub repository.
 
-* Mac (since 2020): sqlrsync-darwin-arm64
-* Mac (before 2020): sqlrsync-darwin-amd64
-* Linux: sqlrsync-linux-amd64
-* Windows: sqlrsync-windows-amd64.exe
+- Mac (since 2020): sqlrsync-darwin-arm64
+- Mac (before 2020): sqlrsync-darwin-amd64
+- Linux: sqlrsync-linux-amd64
+- Windows: sqlrsync-windows-amd64.exe
 
 ## Running
 
 Run ./bin/sqlrsync <params>
 
-## Stored Settings
+## Application Logic and Settings
 
-Settings and defaults are stored in your user directory at ~/.config/sqlrsync.  Within that directory, there are two files:
+By default, REMOTE is SQLRsync.com Version Controlled Storage
 
-1) defaults.toml
+### Authentication and Authorization
+
+There are 3 types of keys used by SQLRsync:
+- Account Create: Allows the creation of a new Database on REMOTE
+- Account Pull: Allows creating a local copy of any version of any existing Database on REMOTE that is owned by that account
+- Replica Pull: Allows creating a local copy of any version of a specific existing Database on REMOTE to a local file
+- Replica Push: Allows the creation of a new version of a specific existing Database on REMOTE
+
+Account level Pull and Create keys are never stored locally, and are always interactively prompted or provided as a command line argument.
+
+If you use an Account level key, the server will reply with a new replica-specific Pull key (and Push token if you use an Account Create key). The pull key is stored adjacent to the replicated database in a file ending with the suffix `-sqlrsync`, along with other data.  (For a database at /tmp/my-data.sqlite, the pull key would be stored in /tmp/my-data.sqlite-sqlrsync)
+
+The more sensitive Replica Push key is stored in ~/.config/sqlrsync/local-secrets.toml and subsequent pushes will use that key.
+
+### Stored Settings
+
+Settings and defaults are stored in your user directory at ~/.config/sqlrsync. Within that directory, there are two files:
+
+1. defaults.toml
    Contains default settings for all sqlrsync databases, like server URL, public/private, to generate a new unique clientSideEncryptionKey
-
-2) local-secrets.toml
+```toml
+# An example ~/.config/defaults.toml
+[defaults]
+server = "wss://sqlrsync.com"
+```
+cd 
+2. local-secrets.toml
    Contains this-machine-specific settings, including the path to the local SQLite files, push keys, and encryption keys.
 
 ```toml
+# An example ~/.config/local-secrets.toml
 [local]
 # When a new SQLRsync Replica is created on the server, we can use this prefix to identify this machine
 hostname = "homelab3"
-defaultClientSideEncryptionKey = ""
+defaultClientSideEncryptionKey = "riot-camel-pass-flash-cereal-journey"
 
 [[sqlrsync-databases]]
 path = "/home/matt/webapps/hedgedoc/data/data.db"
+replicaID = "AJK928AK02jidsJA1"
 private-push-key = "abcd1234abcd1234"
+clientSideEncryptionKey = "riot-camel-pass-flash-cereal-journey"
 lastUpdated = "2023-01-01T00:00:00Z"
-clientSideEncryptionKey = ""
+server = "wss://s9.sqlrsync.com"
 
 [[sqlrsync-databases]]
 path = "/home/matt/webapps/wikijs/data/another.db"
 private-push-key = "efgh5678efgh5678"
 lastUpdated = "2023-01-01T00:00:00Z"
-clientSideEncryptionKey = ""
+clientSideEncryptionKey = "riot-camel-pass-flash-cereal-journey"
+server = "wss://sqlrsync.com"
 ```
-

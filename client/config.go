@@ -4,47 +4,92 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/BurntSushi/toml"
 )
 
-type Config struct {
-	DefaultPrefix string `yaml:"prefix"`
-	PrivateToken  string `yaml:"privateToken"`
+type DefaultsConfig struct {
+	Defaults struct {
+		Server string `toml:"server"`
+	} `toml:"defaults"`
 }
 
-type DatabaseConfig struct {
-	ServerID       string   `yaml:"serverID"`
-	PullToken      string   `yaml:"pullToken,omitempty"`
-	PushToken      string   `yaml:"pushToken,omitempty"`
-	ServerStateID  int      `yaml:"serverStateID"`
-	LocalStateHash string   `yaml:"localStateHash"`
-	Aliases        []string `yaml:"aliases,omitempty"`
+type LocalSecretsConfig struct {
+	Local struct {
+		Hostname                       string `toml:"hostname"`
+		DefaultClientSideEncryptionKey string `toml:"defaultClientSideEncryptionKey"`
+	} `toml:"local"`
+	SQLRsyncDatabases []SQLRsyncDatabase `toml:"sqlrsync-databases"`
 }
 
-type SecretsConfig struct {
-	Config Config                    `yaml:"config"`
-	Dbs    map[string]DatabaseConfig `yaml:"dbs"`
+type SQLRsyncDatabase struct {
+	Path                    string    `toml:"path"`
+	ReplicaID               string    `toml:"replicaID,omitempty"`
+	PrivatePushKey          string    `toml:"private-push-key,omitempty"`
+	ClientSideEncryptionKey string    `toml:"clientSideEncryptionKey,omitempty"`
+	LastUpdated             time.Time `toml:"lastUpdated,omitempty"`
+	Server                  string    `toml:"server,omitempty"`
 }
 
-func LoadSecretsConfig(path string) (*SecretsConfig, error) {
-	data, err := os.ReadFile(path)
+func GetConfigDir() (string, error) {
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
+		return "", fmt.Errorf("failed to get user home directory: %w", err)
+	}
+	return filepath.Join(homeDir, ".config", "sqlrsync"), nil
+}
+
+func GetDefaultsPath() (string, error) {
+	configDir, err := GetConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(configDir, "defaults.toml"), nil
+}
+
+func GetLocalSecretsPath() (string, error) {
+	configDir, err := GetConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(configDir, "local-secrets.toml"), nil
+}
+
+func LoadDefaultsConfig() (*DefaultsConfig, error) {
+	path, err := GetDefaultsPath()
+	if err != nil {
+		return nil, err
 	}
 
-	var config SecretsConfig
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("failed to parse YAML config: %w", err)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Return default config if file doesn't exist
+			config := &DefaultsConfig{}
+			config.Defaults.Server = "wss://sqlrsync.com"
+			return config, nil
+		}
+		return nil, fmt.Errorf("failed to read defaults config file %s: %w", path, err)
+	}
+
+	var config DefaultsConfig
+	if _, err := toml.Decode(string(data), &config); err != nil {
+		return nil, fmt.Errorf("failed to parse TOML defaults config: %w", err)
+	}
+
+	// Set default server if not specified
+	if config.Defaults.Server == "" {
+		config.Defaults.Server = "wss://sqlrsync.com"
 	}
 
 	return &config, nil
 }
 
-func SaveSecretsConfig(config *SecretsConfig, path string) error {
-	data, err := yaml.Marshal(config)
+func SaveDefaultsConfig(config *DefaultsConfig) error {
+	path, err := GetDefaultsPath()
 	if err != nil {
-		return fmt.Errorf("failed to marshal config to YAML: %w", err)
+		return err
 	}
 
 	dir := filepath.Dir(path)
@@ -52,59 +97,110 @@ func SaveSecretsConfig(config *SecretsConfig, path string) error {
 		return fmt.Errorf("failed to create directory %s: %w", dir, err)
 	}
 
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return fmt.Errorf("failed to write config file %s: %w", path, err)
+	file, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("failed to create defaults config file %s: %w", path, err)
+	}
+	defer file.Close()
+
+	encoder := toml.NewEncoder(file)
+	if err := encoder.Encode(config); err != nil {
+		return fmt.Errorf("failed to write defaults config: %w", err)
 	}
 
 	return nil
 }
 
-func GetDefaultSecretsPath() (string, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to get user home directory: %w", err)
-	}
-	return filepath.Join(homeDir, ".config", "sqlrsync", "secrets.yml"), nil
-}
-
-func LoadDefaultSecretsConfig() (*SecretsConfig, error) {
-	path, err := GetDefaultSecretsPath()
+func LoadLocalSecretsConfig() (*LocalSecretsConfig, error) {
+	path, err := GetLocalSecretsPath()
 	if err != nil {
 		return nil, err
 	}
-	return LoadSecretsConfig(path)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Return empty config if file doesn't exist
+			return &LocalSecretsConfig{
+				SQLRsyncDatabases: []SQLRsyncDatabase{},
+			}, nil
+		}
+		return nil, fmt.Errorf("failed to read local-secrets config file %s: %w", path, err)
+	}
+
+	var config LocalSecretsConfig
+	if _, err := toml.Decode(string(data), &config); err != nil {
+		return nil, fmt.Errorf("failed to parse TOML local-secrets config: %w", err)
+	}
+
+	return &config, nil
 }
 
-func SaveDefaultSecretsConfig(config *SecretsConfig) error {
-	path, err := GetDefaultSecretsPath()
+func SaveLocalSecretsConfig(config *LocalSecretsConfig) error {
+	path, err := GetLocalSecretsPath()
 	if err != nil {
 		return err
 	}
-	return SaveSecretsConfig(config, path)
-}
 
-func (sc *SecretsConfig) GetDatabaseConfig(localPath string) (DatabaseConfig, bool) {
-	config, exists := sc.Dbs[localPath]
-	return config, exists
-}
-
-func (sc *SecretsConfig) SetDatabaseConfig(localPath string, config DatabaseConfig) {
-	if sc.Dbs == nil {
-		sc.Dbs = make(map[string]DatabaseConfig)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", dir, err)
 	}
-	sc.Dbs[localPath] = config
+
+	file, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("failed to create local-secrets config file %s: %w", path, err)
+	}
+	defer file.Close()
+
+	// Set file permissions to 0600 (read/write for owner only)
+	if err := file.Chmod(0600); err != nil {
+		return fmt.Errorf("failed to set permissions on local-secrets config file: %w", err)
+	}
+
+	encoder := toml.NewEncoder(file)
+	if err := encoder.Encode(config); err != nil {
+		return fmt.Errorf("failed to write local-secrets config: %w", err)
+	}
+
+	return nil
 }
 
-func (sc *SecretsConfig) RemoveDatabaseConfig(localPath string) {
-	if sc.Dbs != nil {
-		delete(sc.Dbs, localPath)
+func (c *LocalSecretsConfig) FindDatabaseByPath(path string) *SQLRsyncDatabase {
+	for i := range c.SQLRsyncDatabases {
+		if c.SQLRsyncDatabases[i].Path == path {
+			return &c.SQLRsyncDatabases[i]
+		}
+	}
+	return nil
+}
+
+func (c *LocalSecretsConfig) UpdateOrAddDatabase(db SQLRsyncDatabase) {
+	for i := range c.SQLRsyncDatabases {
+		if c.SQLRsyncDatabases[i].Path == db.Path {
+			// Update existing database
+			c.SQLRsyncDatabases[i] = db
+			return
+		}
+	}
+	// Add new database
+	c.SQLRsyncDatabases = append(c.SQLRsyncDatabases, db)
+}
+
+func (c *LocalSecretsConfig) RemoveDatabase(path string) {
+	for i, db := range c.SQLRsyncDatabases {
+		if db.Path == path {
+			// Remove database from slice
+			c.SQLRsyncDatabases = append(c.SQLRsyncDatabases[:i], c.SQLRsyncDatabases[i+1:]...)
+			return
+		}
 	}
 }
 
-func (sc *SecretsConfig) GetPrivateToken() string {
-	return sc.Config.PrivateToken
+func (c *LocalSecretsConfig) SetHostname(hostname string) {
+	c.Local.Hostname = hostname
 }
 
-func (sc *SecretsConfig) SetPrivateToken(token string) {
-	sc.Config.PrivateToken = token
+func (c *LocalSecretsConfig) SetDefaultEncryptionKey(key string) {
+	c.Local.DefaultClientSideEncryptionKey = key
 }
