@@ -164,6 +164,8 @@ type Config struct {
 	PingPong                bool
 	AuthToken               string
 	RequestReadToken        bool // the -sqlrsync file doesn't exist, so make a token
+	LocalHostname           string
+	LocalAbsolutePath       string
 }
 
 // Client handles WebSocket communication with the remote server
@@ -259,13 +261,20 @@ func (c *Client) Connect() error {
 		headers.Set("Authorization", c.config.AuthToken)
 	}
 
+	if c.config.LocalHostname != "" {
+		headers.Set("X-LocalHostname", c.config.LocalHostname)
+	}
+	if c.config.LocalAbsolutePath != "" {
+		headers.Set("X-LocalAbsolutePath", c.config.LocalAbsolutePath)
+	}
+
 	conn, response, err := dialer.DialContext(connectCtx, u.String(), headers)
 	if err != nil {
 		fmt.Println("Failed to connect:", err)
 		respStr, _ := io.ReadAll(response.Body)
 		return fmt.Errorf("%s", respStr)
 	}
-		defer response.Body.Close()
+	defer response.Body.Close()
 
 	c.mu.Lock()
 	c.conn = conn

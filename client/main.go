@@ -238,10 +238,14 @@ func runDirectSync(originPath, replicaPath string) error {
 	}
 
 	logger.Info("Direct synchronization completed successfully")
+	fmt.Println("✅ Locally replicated", originPath, "to", replicaPath+".")
 	return nil
 }
 
 func runPushSync(localPath string, remotePath string) error {
+	logger.Info("Running a PUSH sync",
+		zap.String("local", localPath),
+		zap.String("remote", remotePath))
 	// Validate that database file exists
 	if _, err := os.Stat(localPath); os.IsNotExist(err) {
 		return fmt.Errorf("database file does not exist: %s", localPath)
@@ -274,9 +278,21 @@ func runPushSync(localPath string, remotePath string) error {
 		}
 	}
 
+	if remotePath == "" {
+		// Check for -sqlrsync file
+		sqlrsyncFile := absLocalPath + "-sqlrsync"
+		if _, err := os.Stat(sqlrsyncFile); os.IsNotExist(err) {
+			fmt.Println("No -sqlrsync file found.  This database hasn't been pushed to SQLRsync Server before.")
+			fmt.Println("No REMOTE name provided.  Will use Account Admin Key's default Replica name.")
+		} else {
+			logger.Info("Found -sqlrsync file.")
+		}
+	}
+
 	// Check if we have a push key for this database
 	if dbConfig.PrivatePushKey == "" && authToken == "" {
-		fmt.Print("A Push Key is required for this database. Enter the Push Key: ")
+		fmt.Println("No Key provided.  Creating a new Replica?  Get a key at https://sqlrsync.com/namespaces")
+		fmt.Print("Enter an Account Admin Key to create a new Replica: ")
 		reader := bufio.NewReader(os.Stdin)
 		token, err := reader.ReadString('\n')
 		if err != nil {
@@ -320,14 +336,19 @@ func runPushSync(localPath string, remotePath string) error {
 		authToken = dbConfig.PrivatePushKey
 	}
 
+	localHostname, _ := os.Hostname()
+	fmt.Println("Using hostname", localHostname, "and abs path", absLocalPath)
+
 	// Create remote client for WebSocket transport
 	remoteClient, err := remote.New(&remote.Config{
-		ServerURL:               serverURL + "/push/" + remotePath,
+		ServerURL:               serverURL + "/sapi/push/" + remotePath,
 		PingPong:                false,
 		Timeout:                 timeout,
 		AuthToken:               authToken,
 		Logger:                  logger.Named("remote"),
 		EnableTrafficInspection: inspectTraffic,
+		LocalHostname:           localHostname,
+		LocalAbsolutePath:       absLocalPath,
 		InspectionDepth:         inspectionDepth,
 		RequestReadToken:        needsReadToken(localPath),
 	})
@@ -474,7 +495,7 @@ func runPullSync(remotePath string, localPath string) error {
 
 	// Create remote client for WebSocket transport
 	remoteClient, err := remote.New(&remote.Config{
-		ServerURL:               serverURL + "/pull/" + remotePath,
+		ServerURL:               serverURL + "/sapi/pull/" + remotePath,
 		Timeout:                 timeout,
 		PingPong:                false,
 		Logger:                  logger.Named("remote"),
