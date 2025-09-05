@@ -273,9 +273,7 @@ func (c *Client) Connect() error {
 
 	conn, response, err := dialer.DialContext(connectCtx, u.String(), headers)
 	if err != nil {
-		fmt.Println("Failed to connect:", err)
 		respStr, _ := io.ReadAll(response.Body)
-		c.logger.Error("Failed to connect to remote server", zap.String("response", string(respStr)))
 		return fmt.Errorf("%s", respStr)
 	}
 	defer response.Body.Close()
@@ -639,13 +637,13 @@ func (c *Client) readLoop() {
 			conn := c.conn
 			c.mu.RUnlock()
 
-			if conn == nil {
+			if conn == nil || c.isSyncCompleted(){
 				c.setConnected(false)
 				return
 			}
 
 			// Set read deadline
-			conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+			conn.SetReadDeadline(time.Now().Add(9 * time.Second))
 
 			messageType, data, err := conn.ReadMessage()
 			if err != nil {

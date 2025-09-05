@@ -28,7 +28,9 @@ var (
 	inspectTraffic  bool
 	inspectionDepth int
 	newReadToken    bool
-	authToken       string
+	pullKey         string
+	pushKey         string
+	replicaID       string
 )
 
 var rootCmd = &cobra.Command{
@@ -188,7 +190,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 				// If we have a push key for this database, use it to push
 				pushedDBInfo := localSecretsConfig.FindDatabaseByPath(absPath)
 				if pushedDBInfo != nil && pushedDBInfo.PushKey != "" {
-					authToken = pushedDBInfo.PushKey
+					pushKey = pushedDBInfo.PushKey
 					return runPushSync(absPath, pushedDBInfo.RemotePath)
 				}
 			}
@@ -202,6 +204,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 				if dashSQLRsync.RemotePath == "" {
 					return fmt.Errorf("invalid -sqlrsync file: missing remote path")
 				}
+				pullKey = dashSQLRsync.PullKey
 				return runPullSync(dashSQLRsync.RemotePath, path)
 			}
 
@@ -306,7 +309,7 @@ func runPushSync(localPath string, remotePath string) error {
 	}
 
 	// Check if we have a push key for this database
-	if os.Getenv("SQLRSYNC_TOKEN") == "" && authToken == "" {
+	if os.Getenv("SQLRSYNC_ADMIN_KEY") == "" && pushKey == "" {
 		httpServer := strings.Replace(serverURL, "ws", "http", 1)
 		fmt.Println("No Key provided.  Creating a new Replica?  Get a key at " + httpServer + "/namespaces")
 		fmt.Print("   Enter an Account Admin Key to create a new Replica: ")
@@ -320,15 +323,8 @@ func runPushSync(localPath string, remotePath string) error {
 		if token == "" {
 			return fmt.Errorf("push key cannot be empty")
 		}
-		authToken = token
-
-		// account admin tokens are 24 and are stashed for the session
-		if len(token) == 24 {
-			os.Setenv("SQLRSYNC_TOKEN", token)
-		}
+		pushKey = token
 	}
-
-
 
 	logger.Info("Starting push synchronization to sqlrsync.com",
 		zap.String("local", localPath),
@@ -354,7 +350,7 @@ func runPushSync(localPath string, remotePath string) error {
 		ServerURL:               serverURL + "/sapi/push/" + remotePath,
 		PingPong:                false,
 		Timeout:                 timeout,
-		AuthToken:               authToken,
+		AuthToken:               pushKey,
 		Logger:                  logger.Named("remote"),
 		EnableTrafficInspection: inspectTraffic,
 		LocalHostname:           localHostname,
@@ -411,7 +407,7 @@ func runPushSync(localPath string, remotePath string) error {
 		replicaPath := remoteClient.GetReplicaPath()
 
 		dashSQLRsync := NewDashSQLRsync(localPath)
-		if err := dashSQLRsync.Write(replicaPath, replicaID, token); err != nil {
+		if err := dashSQLRsync.Write(replicaPath, replicaID, token, serverURL); err != nil {
 			return fmt.Errorf("failed to create shareable config file: %w", err)
 		}
 		fmt.Println("🔑 Shareable config file created:", dashSQLRsync.FilePath())
@@ -470,31 +466,10 @@ func runPullSync(remotePath string, localPath string) error {
 		}
 	}
 
-	// Load local secrets config
-	localSecretsConfig, err := LoadLocalSecretsConfig()
-	if err != nil {
-		return fmt.Errorf("failed to load local secrets config: %w", err)
-	}
-
-	// Get absolute path for the local database
-	absLocalPath, err := filepath.Abs(localPath)
-	if err != nil {
-		return fmt.Errorf("failed to get absolute path: %w", err)
-	}
-
-	// Find or create database entry
-	dbConfig := localSecretsConfig.FindDatabaseByPath(absLocalPath)
-	if dbConfig == nil {
-		// Create new database entry
-		dbConfig = &SQLRsyncDatabase{
-			LocalPath: absLocalPath,
-			Server:    serverURL,
-		}
-	}
-
 	// Create remote client for WebSocket transport
 	remoteClient, err := remote.New(&remote.Config{
 		ServerURL:               serverURL + "/sapi/pull/" + remotePath,
+		AuthToken:               pullKey,
 		Timeout:                 timeout,
 		PingPong:                false,
 		Logger:                  logger.Named("remote"),
@@ -510,7 +485,7 @@ func runPullSync(remotePath string, localPath string) error {
 
 	// Connect to remote server
 	if err := remoteClient.Connect(); err != nil {
-		return fmt.Errorf("failed to connect to pull from server: %w", err)
+		return fmt.Errorf("%w", err)
 	}
 
 	// Create local client for SQLite operations
@@ -533,23 +508,9 @@ func runPullSync(remotePath string, localPath string) error {
 		token := remoteClient.GetNewPullKey()
 		dashSQLRsync := NewDashSQLRsync(localPath)
 		replicaID := remoteClient.GetReplicaID()
-		if err := dashSQLRsync.Write(remotePath, replicaID, token); err != nil {
+		if err := dashSQLRsync.Write(remotePath, replicaID, token, serverURL); err != nil {
 			return fmt.Errorf("failed to create shareable config file: %w", err)
 		}
-	}
-
-	dbConfig.LastPush = time.Now()
-	if remoteClient.GetNewPushKey() != "" {
-		fmt.Println("🔑 This database is now PUSH-enabled.  The a new, replica-specific PUSH key has been stored in your user's ~/.config/sqlrsync/local-secrets.toml.")
-		dbConfig.ReplicaID = remoteClient.GetReplicaID()
-		dbConfig.PushKey = remoteClient.GetNewPushKey()
-	}
-
-	localSecretsConfig.UpdateOrAddDatabase(*dbConfig)
-
-	// Save the updated config
-	if err := SaveLocalSecretsConfig(localSecretsConfig); err != nil {
-		logger.Warn("Failed to save local secrets config", zap.Error(err))
 	}
 
 	logger.Info("Pull synchronization completed successfully")
@@ -601,7 +562,9 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.Flags().StringVar(&authToken, "authKey", "", "Authentication key for push/pull operations")
+	rootCmd.Flags().StringVar(&pullKey, "pullKey", "", "Authentication key for pull operations")
+	rootCmd.Flags().StringVar(&pushKey, "pushKey", "", "Authentication key for push operations")
+	rootCmd.Flags().StringVar(&replicaID, "replicaID", "", "Replica ID for the remote database (overwrites the REMOTE path)")
 	rootCmd.Flags().StringVarP(&serverURL, "server", "s", "wss://sqlrsync.com", "Server URL for push/pull operations")
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging")
 	rootCmd.Flags().BoolVar(&newReadToken, "storeNewReadToken", true, "After syncing, the server creates a new read-only token that is stored in the -sqlrsync file adjacent to the local database")

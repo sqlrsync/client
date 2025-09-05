@@ -262,14 +262,14 @@ func (d *DashSQLRsync) Read() error {
 }
 
 // Write writes the -sqlrsync file with the given remote path and pull key
-func (d *DashSQLRsync) Write(remotePath string, replicaID string, pullKey string) error {
+func (d *DashSQLRsync) Write(remotePath string, replicaID string, pullKey string, serverURL string) error {
 	d.RemotePath = remotePath
 	d.PullKey = pullKey
 
 	content := fmt.Sprintf(`#!/bin/bash
 # https://sqlrsync.com/docs/-sqlrsync
-sqlrsync %s --replicaID=%s --pullKey=%s
-`, remotePath, replicaID, pullKey)
+sqlrsync %s --replicaID=%s --pullKey=%s --server="%s"
+`, remotePath, replicaID, pullKey, serverURL)
 
 	if err := os.WriteFile(d.FilePath(), []byte(content), 0755); err != nil {
 		return fmt.Errorf("failed to write -sqlrsync file: %w", err)
