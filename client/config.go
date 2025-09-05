@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -26,10 +28,16 @@ type LocalSecretsConfig struct {
 type SQLRsyncDatabase struct {
 	Path                    string    `toml:"path"`
 	ReplicaID               string    `toml:"replicaID,omitempty"`
-	PrivatePushKey          string    `toml:"private-push-key,omitempty"`
 	ClientSideEncryptionKey string    `toml:"clientSideEncryptionKey,omitempty"`
 	LastUpdated             time.Time `toml:"lastUpdated,omitempty"`
 	Server                  string    `toml:"server,omitempty"`
+}
+
+// DashSQLRsync manages the -sqlrsync file for a database
+type DashSQLRsync struct {
+	DatabasePath string
+	RemotePath   string
+	PullKey      string
 }
 
 func GetConfigDir() (string, error) {
@@ -203,4 +211,85 @@ func (c *LocalSecretsConfig) SetHostname(hostname string) {
 
 func (c *LocalSecretsConfig) SetDefaultEncryptionKey(key string) {
 	c.Local.DefaultClientSideEncryptionKey = key
+}
+
+// NewDashSQLRsync creates a new DashSQLRsync instance for the given database path
+func NewDashSQLRsync(databasePath string) *DashSQLRsync {
+	return &DashSQLRsync{
+		DatabasePath: databasePath,
+	}
+}
+
+// FilePath returns the path to the -sqlrsync file
+func (d *DashSQLRsync) FilePath() string {
+	return d.DatabasePath + "-sqlrsync"
+}
+
+// Exists checks if the -sqlrsync file exists
+func (d *DashSQLRsync) Exists() bool {
+	_, err := os.Stat(d.FilePath())
+	return err == nil
+}
+
+// Read reads the -sqlrsync file and populates the struct fields
+func (d *DashSQLRsync) Read() error {
+	if !d.Exists() {
+		return fmt.Errorf("file does not exist: %s", d.FilePath())
+	}
+
+	file, err := os.Open(d.FilePath())
+	if err != nil {
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		
+		if strings.HasPrefix(line, "#") || line == "" {
+			continue
+		}
+		
+		if strings.HasPrefix(line, "sqlrsync ") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				d.RemotePath = parts[1]
+			}
+			
+			for _, part := range parts {
+				if strings.HasPrefix(part, "--pullKey=") {
+					d.PullKey = strings.TrimPrefix(part, "--pullKey=")
+				}
+			}
+			break
+		}
+	}
+
+	return scanner.Err()
+}
+
+// Write writes the -sqlrsync file with the given remote path and pull key
+func (d *DashSQLRsync) Write(remotePath string, pullKey string) error {
+	d.RemotePath = remotePath
+	d.PullKey = pullKey
+
+	content := fmt.Sprintf(`#!/bin/bash
+# https://sqlrsync.com/docs/pullfile
+sqlrsync %s --pullKey=%s
+`, remotePath, pullKey)
+
+	if err := os.WriteFile(d.FilePath(), []byte(content), 0755); err != nil {
+		return fmt.Errorf("failed to write -sqlrsync file: %w", err)
+	}
+
+	return nil
+}
+
+// Remove removes the -sqlrsync file if it exists
+func (d *DashSQLRsync) Remove() error {
+	if !d.Exists() {
+		return nil
+	}
+	return os.Remove(d.FilePath())
 }
