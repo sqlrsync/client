@@ -172,7 +172,7 @@ func go_local_read_callback(userData unsafe.Pointer, buffer *C.uint8_t, size C.i
 	bytesRead, err := client.ReadFunc(goBuffer)
 	if err != nil {
 		if err.Error() != "connection lost" && err.Error() != "sync completed" {
-			client.Logger.Error("Read callback error", zap.Error(err))
+			client.Logger.Error("Connection to server had a failure.  Are you online?  Read callback error", zap.Error(err))
 		}
 		return -1
 	}
