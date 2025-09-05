@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	SQLRSYNC_NEEDREADKEY = 0x51 // Send to request a new read key
+	SQLRSYNC_CONFIG = 0x51 // Send to keys and replicaID
 )
 
 // TrafficInspector provides traffic inspection and protocol message detection
@@ -143,7 +143,7 @@ func (t *TrafficInspector) parseMessageType(data []byte) string {
 	case 0x67: // REPLICA_CONFIG
 		return "REPLICA_CONFIG"
 	case 0x51:
-		return "SQLRSYNC_NEEDREADKEY"
+		return "SQLRSYNC_CONFIG"
 	default:
 		// For unknown messages, classify by first byte
 		if firstByte >= 32 && firstByte <= 126 {
@@ -163,7 +163,7 @@ type Config struct {
 	InspectionDepth         int  // How many bytes to inspect (default: 32)
 	PingPong                bool
 	AuthToken               string
-	RequestReadToken        bool // the -sqlrsync file doesn't exist, so make a token
+	SendConfigCmd           bool // the -sqlrsync file doesn't exist, so make a token
 	LocalHostname           string
 	LocalAbsolutePath       string
 }
@@ -201,7 +201,10 @@ type Client struct {
 	syncMu        sync.RWMutex
 
 	// sqlrsync specific
-	NewReadToken string
+	NewPullKey  string
+	NewPushKey  string
+	ReplicaID   string
+	ReplicaPath string
 }
 
 // New creates a new remote WebSocket client
@@ -272,6 +275,7 @@ func (c *Client) Connect() error {
 	if err != nil {
 		fmt.Println("Failed to connect:", err)
 		respStr, _ := io.ReadAll(response.Body)
+		c.logger.Error("Failed to connect to remote server", zap.String("response", string(respStr)))
 		return fmt.Errorf("%s", respStr)
 	}
 	defer response.Body.Close()
@@ -682,10 +686,29 @@ func (c *Client) readLoop() {
 			}
 
 			if messageType == websocket.TextMessage {
-				readKeyCmd := "NEWREADKEY="
+				accessKeyLength := 22
+				replicaIDLength := 18
+				readPullKeyResp := "NEWPULLKEY="
+				readPushKeyResp := "NEWPUSHKEY="
+				replicaIDResp := "REPLICAID="
+				replicaPathResp := "REPLICAPATH="
+				// Handle text messages for NEWPULLKEY, NEWPUSHKEY, REPLICAID
+				// Example: "NEWPULLKEY=xxxxxxxxxxxxxxxxxxxxxx"
 				strData := string(data)
-				if (len(data) >= len(readKeyCmd)+22) && strings.HasPrefix(strData, readKeyCmd) {
-					c.NewReadToken = strData[len(readKeyCmd) : len(readKeyCmd)+22]
+				if (len(data) >= len(readPullKeyResp)+accessKeyLength) && strings.HasPrefix(strData, readPullKeyResp) {
+					c.NewPullKey = strData[len(readPullKeyResp):]
+					c.logger.Debug("📥 Received new Pull Key:", zap.String("key", c.NewPullKey))
+				} else if (len(data) >= len(readPushKeyResp)+accessKeyLength) && strings.HasPrefix(strData, readPushKeyResp) {
+
+					c.NewPushKey = strData[len(readPushKeyResp):]
+					c.logger.Debug("📥 Received new Push Key:", zap.String("key", c.NewPushKey))
+				} else if (len(data) >= len(replicaIDResp)+replicaIDLength) && strings.HasPrefix(strData, replicaIDResp) {
+					c.ReplicaID = strData[len(replicaIDResp):]
+					c.logger.Debug("📥 Received Replica ID:", zap.String("id", c.ReplicaID))
+				} else if (len(data) >= len(replicaPathResp)) && strings.HasPrefix(strData, replicaPathResp) {
+
+					c.ReplicaPath = strData[len(replicaPathResp):]
+					c.logger.Debug("📥 Received new Replica Path:", zap.String("path", c.ReplicaPath))
 				}
 				continue
 			}
@@ -768,10 +791,10 @@ func (c *Client) writeLoop() {
 				return
 			}
 
-			if c.config.RequestReadToken {
-				conn.WriteMessage(websocket.BinaryMessage, []byte{SQLRSYNC_NEEDREADKEY})
-				c.config.RequestReadToken = false
-				c.logger.Debug("🔑 Also asked for a new read token.")
+			if c.config.SendConfigCmd {
+				conn.WriteMessage(websocket.BinaryMessage, []byte{SQLRSYNC_CONFIG})
+				c.config.SendConfigCmd = false
+				c.logger.Debug("🔑 Also asked for keys and replicaID.")
 			}
 
 			c.logger.Debug("Sent message to remote", zap.Int("bytes", len(data)))
@@ -779,6 +802,17 @@ func (c *Client) writeLoop() {
 	}
 }
 
-func (c *Client) GetNewReadToken() string {
-	return c.NewReadToken
+func (c *Client) GetNewPullKey() string {
+	return c.NewPullKey
+}
+
+func (c *Client) GetNewPushKey() string {
+	return c.NewPushKey
+}
+
+func (c *Client) GetReplicaID() string {
+	return c.ReplicaID
+}
+func (c *Client) GetReplicaPath() string {
+	return c.ReplicaPath
 }

@@ -175,21 +175,23 @@ func runSync(cmd *cobra.Command, args []string) error {
 		}
 	} else if len(args) == 1 {
 		// One argument: either ORIGIN (push/pull depends on ~.config & -sqlrsync) or REPLICA (for pull)
-	 	path := args[0]
+		path := args[0]
 		if isLocal(path) {
 			// IF ORIGIN:LOCAL (no REPLICA) - varies
 			localSecretsConfig, err := LoadLocalSecretsConfig()
 			if err != nil {
 				return fmt.Errorf("failed to load local secrets config: %w", err)
 			}
-
-			// If we have a push key for this database, use it to push
-			pushedDBInfo := localSecretsConfig.FindDatabaseByPath(path)
-			if pushedDBInfo != nil && pushedDBInfo.ReplicaID != "" {
-
-				return runPushSync(path, pushedDBInfo.ReplicaID)
+			// Get absolute path for the local database
+			absPath, err := filepath.Abs(path)
+			if err == nil {
+				// If we have a push key for this database, use it to push
+				pushedDBInfo := localSecretsConfig.FindDatabaseByPath(absPath)
+				if pushedDBInfo != nil && pushedDBInfo.PushKey != "" {
+					authToken = pushedDBInfo.PushKey
+					return runPushSync(absPath, pushedDBInfo.RemotePath)
+				}
 			}
-
 
 			// else if there is a -sqlrsync file, do a pull instead
 			dashSQLRsync := NewDashSQLRsync(path)
@@ -268,12 +270,6 @@ func runPushSync(localPath string, remotePath string) error {
 		return fmt.Errorf("database file does not exist: %s", localPath)
 	}
 
-	// Load defaults config
-	defaultsConfig, err := LoadDefaultsConfig()
-	if err != nil {
-		return fmt.Errorf("failed to load defaults config: %w", err)
-	}
-
 	// Load local secrets config
 	localSecretsConfig, err := LoadLocalSecretsConfig()
 	if err != nil {
@@ -291,8 +287,11 @@ func runPushSync(localPath string, remotePath string) error {
 	if dbConfig == nil {
 		// Create new database entry
 		dbConfig = &SQLRsyncDatabase{
-			Path: absLocalPath,
+			LocalPath: absLocalPath,
+			Server:    serverURL,
 		}
+	} else {
+		serverURL = dbConfig.Server
 	}
 
 	if remotePath == "" {
@@ -308,8 +307,9 @@ func runPushSync(localPath string, remotePath string) error {
 
 	// Check if we have a push key for this database
 	if os.Getenv("SQLRSYNC_TOKEN") == "" && authToken == "" {
-		fmt.Println("No Key provided.  Creating a new Replica?  Get a key at https://sqlrsync.com/namespaces")
-		fmt.Print("Enter an Account Admin Key to create a new Replica: ")
+		httpServer := strings.Replace(serverURL, "ws", "http", 1)
+		fmt.Println("No Key provided.  Creating a new Replica?  Get a key at " + httpServer + "/namespaces")
+		fmt.Print("   Enter an Account Admin Key to create a new Replica: ")
 		reader := bufio.NewReader(os.Stdin)
 		token, err := reader.ReadString('\n')
 		if err != nil {
@@ -328,13 +328,7 @@ func runPushSync(localPath string, remotePath string) error {
 		}
 	}
 
-	// Use server from database config, or defaults if not set
-	if dbConfig.Server == "" {
-		dbConfig.Server = defaultsConfig.Defaults.Server
-	}
-	if serverURL == "" {
-		serverURL = dbConfig.Server
-	}
+
 
 	logger.Info("Starting push synchronization to sqlrsync.com",
 		zap.String("local", localPath),
@@ -354,7 +348,6 @@ func runPushSync(localPath string, remotePath string) error {
 	defer localClient.Close()
 
 	localHostname, _ := os.Hostname()
-	fmt.Println("Using hostname", localHostname, "and abs path", absLocalPath)
 
 	// Create remote client for WebSocket transport
 	remoteClient, err := remote.New(&remote.Config{
@@ -367,7 +360,7 @@ func runPushSync(localPath string, remotePath string) error {
 		LocalHostname:           localHostname,
 		LocalAbsolutePath:       absLocalPath,
 		InspectionDepth:         inspectionDepth,
-		RequestReadToken:        needsReadToken(localPath),
+		SendConfigCmd:           needsToBuildDashSQLRSyncFile(localPath),
 	})
 
 	if err != nil {
@@ -396,21 +389,29 @@ func runPushSync(localPath string, remotePath string) error {
 		return fmt.Errorf("push synchronization failed: %w", err)
 	}
 
-	// Update database config with latest info
-	dbConfig.LastUpdated = time.Now()
-	localSecretsConfig.UpdateOrAddDatabase(*dbConfig)
+	logger.Info("Push synchronization completed successfully")
 
+	dbConfig.LastPush = time.Now()
+	if remoteClient.GetNewPushKey() != "" {
+		fmt.Println("🔑 This database is now PUSH-enabled.")
+		fmt.Println("   A new, replica-specific PUSH key has been stored at ~/.config/sqlrsync/local-secrets.toml")
+		dbConfig.ReplicaID = remoteClient.GetReplicaID()
+		dbConfig.RemotePath = remoteClient.GetReplicaPath()
+		dbConfig.PushKey = remoteClient.GetNewPushKey()
+	}
+	localSecretsConfig.UpdateOrAddDatabase(*dbConfig)
 	// Save the updated config
 	if err := SaveLocalSecretsConfig(localSecretsConfig); err != nil {
 		logger.Warn("Failed to save local secrets config", zap.Error(err))
 	}
 
-	logger.Info("Push synchronization completed successfully")
-	if needsReadToken(localPath) {
-		token := remoteClient.GetNewReadToken()
+	if needsToBuildDashSQLRSyncFile(localPath) {
+		token := remoteClient.GetNewPullKey()
+		replicaID := remoteClient.GetReplicaID()
+		replicaPath := remoteClient.GetReplicaPath()
 
 		dashSQLRsync := NewDashSQLRsync(localPath)
-		if err := dashSQLRsync.Write(remotePath, token); err != nil {
+		if err := dashSQLRsync.Write(replicaPath, replicaID, token); err != nil {
 			return fmt.Errorf("failed to create shareable config file: %w", err)
 		}
 		fmt.Println("🔑 Shareable config file created:", dashSQLRsync.FilePath())
@@ -441,7 +442,7 @@ func isValidVersion(version string) bool {
 	return false
 }
 
-func needsReadToken(path string) bool {
+func needsToBuildDashSQLRSyncFile(path string) bool {
 	if !newReadToken {
 		return false
 	}
@@ -469,12 +470,6 @@ func runPullSync(remotePath string, localPath string) error {
 		}
 	}
 
-	// Load defaults config
-	defaultsConfig, err := LoadDefaultsConfig()
-	if err != nil {
-		return fmt.Errorf("failed to load defaults config: %w", err)
-	}
-
 	// Load local secrets config
 	localSecretsConfig, err := LoadLocalSecretsConfig()
 	if err != nil {
@@ -492,16 +487,9 @@ func runPullSync(remotePath string, localPath string) error {
 	if dbConfig == nil {
 		// Create new database entry
 		dbConfig = &SQLRsyncDatabase{
-			Path: absLocalPath,
+			LocalPath: absLocalPath,
+			Server:    serverURL,
 		}
-	}
-
-	// Use server from database config, or defaults if not set
-	if dbConfig.Server == "" {
-		dbConfig.Server = defaultsConfig.Defaults.Server
-	}
-	if serverURL == "" {
-		serverURL = dbConfig.Server
 	}
 
 	// Create remote client for WebSocket transport
@@ -513,7 +501,7 @@ func runPullSync(remotePath string, localPath string) error {
 		EnableTrafficInspection: inspectTraffic,
 		InspectionDepth:         inspectionDepth,
 		Version:                 version,
-		RequestReadToken:        needsReadToken(localPath),
+		SendConfigCmd:           needsToBuildDashSQLRSyncFile(localPath),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create remote client: %w", err)
@@ -541,17 +529,22 @@ func runPullSync(remotePath string, localPath string) error {
 		return fmt.Errorf("pull synchronization failed: %w", err)
 	}
 
-	if needsReadToken(localPath) {
-		token := remoteClient.GetNewReadToken()
-
+	if needsToBuildDashSQLRSyncFile(localPath) {
+		token := remoteClient.GetNewPullKey()
 		dashSQLRsync := NewDashSQLRsync(localPath)
-		if err := dashSQLRsync.Write(remotePath, token); err != nil {
+		replicaID := remoteClient.GetReplicaID()
+		if err := dashSQLRsync.Write(remotePath, replicaID, token); err != nil {
 			return fmt.Errorf("failed to create shareable config file: %w", err)
 		}
 	}
 
-	// Update database config with latest info
-	dbConfig.LastUpdated = time.Now()
+	dbConfig.LastPush = time.Now()
+	if remoteClient.GetNewPushKey() != "" {
+		fmt.Println("🔑 This database is now PUSH-enabled.  The a new, replica-specific PUSH key has been stored in your user's ~/.config/sqlrsync/local-secrets.toml.")
+		dbConfig.ReplicaID = remoteClient.GetReplicaID()
+		dbConfig.PushKey = remoteClient.GetNewPushKey()
+	}
+
 	localSecretsConfig.UpdateOrAddDatabase(*dbConfig)
 
 	// Save the updated config
@@ -609,7 +602,7 @@ func Execute() error {
 
 func init() {
 	rootCmd.Flags().StringVar(&authToken, "authKey", "", "Authentication key for push/pull operations")
-	rootCmd.Flags().StringVarP(&serverURL, "server", "s", "", "Server URL for push/pull operations (defaults to value in config)")
+	rootCmd.Flags().StringVarP(&serverURL, "server", "s", "wss://sqlrsync.com", "Server URL for push/pull operations")
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging")
 	rootCmd.Flags().BoolVar(&newReadToken, "storeNewReadToken", true, "After syncing, the server creates a new read-only token that is stored in the -sqlrsync file adjacent to the local database")
 	rootCmd.Flags().BoolVar(&dryRun, "dry", false, "Perform a dry run without making changes")
