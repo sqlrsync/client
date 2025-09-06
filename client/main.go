@@ -204,10 +204,14 @@ func runSync(cmd *cobra.Command, args []string) error {
 				if dashSQLRsync.RemotePath == "" {
 					return fmt.Errorf("invalid -sqlrsync file: missing remote path")
 				}
+				localPath := ""
+				version := "latest"
+				localPath, version, _ = strings.Cut(path, "@")
+
 				pullKey = dashSQLRsync.PullKey
 				replicaID = dashSQLRsync.ReplicaID
 				serverURL = dashSQLRsync.Server
-				return runPullSync(dashSQLRsync.RemotePath, path)
+				return runPullSync(dashSQLRsync.RemotePath + "@" + version, localPath)
 			}
 
 			// else push this file up
@@ -459,11 +463,13 @@ func runPullSync(remotePath string, localPath string) error {
 		zap.String("server", serverURL),
 		zap.Bool("dryRun", dryRun))
 
-	version := "latest"
-
+	var version string
 	// if remotePath has an @, then we want to pass that version through
 	if strings.Contains(remotePath, "@") {
 		remotePath, version, _ = strings.Cut(remotePath, "@")
+		if version == "" {
+			version = "latest"
+		}
 
 		// if version is not a number, `latest`, or `latest-<number>` then error
 		if !isValidVersion(version) {

@@ -209,6 +209,10 @@ func (c *LocalSecretsConfig) RemoveDatabase(path string) {
 
 // NewDashSQLRsync creates a new DashSQLRsync instance for the given database path
 func NewDashSQLRsync(databasePath string) *DashSQLRsync {
+	if(strings.Contains(databasePath, "@")) {
+		databasePath = strings.Split(databasePath, "@")[0]
+	}
+	
 	return &DashSQLRsync{
 		DatabasePath: databasePath,
 	}

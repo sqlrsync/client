@@ -270,6 +270,9 @@ func (c *Client) Connect() error {
 	if c.config.LocalAbsolutePath != "" {
 		headers.Set("X-LocalAbsolutePath", c.config.LocalAbsolutePath)
 	}
+		if c.config.Version != "" {
+		headers.Set("X-ReplicaVersion", c.config.Version)
+	}
 
 	conn, response, err := dialer.DialContext(connectCtx, u.String(), headers)
 	if err != nil {
