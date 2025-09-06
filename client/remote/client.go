@@ -157,6 +157,7 @@ func (t *TrafficInspector) parseMessageType(data []byte) string {
 type Config struct {
 	ServerURL               string
 	Version                 string
+	ReplicaID               string
 	Timeout                 int // in milliseconds
 	Logger                  *zap.Logger
 	EnableTrafficInspection bool // Enable detailed traffic logging
@@ -272,6 +273,9 @@ func (c *Client) Connect() error {
 	}
 	if c.config.Version != "" {
 		headers.Set("X-ReplicaVersion", strings.Replace(c.config.Version, "latest", "", 1))
+	}
+	if c.config.ReplicaID != "" {
+		headers.Set("X-ReplicaID", c.config.ReplicaID)
 	}
 
 	conn, response, err := dialer.DialContext(connectCtx, u.String(), headers)

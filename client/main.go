@@ -211,7 +211,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 				pullKey = dashSQLRsync.PullKey
 				replicaID = dashSQLRsync.ReplicaID
 				serverURL = dashSQLRsync.Server
-				return runPullSync(dashSQLRsync.RemotePath + "@" + version, localPath)
+				return runPullSync(dashSQLRsync.RemotePath+"@"+version, localPath)
 			}
 
 			// else push this file up
@@ -465,7 +465,7 @@ func runPullSync(remotePath string, localPath string) error {
 		zap.String("server", serverURL),
 		zap.Bool("dryRun", dryRun))
 
-	var version string
+	version := "latest"
 	// if remotePath has an @, then we want to pass that version through
 	if strings.Contains(remotePath, "@") {
 		remotePath, version, _ = strings.Cut(remotePath, "@")
@@ -485,6 +485,7 @@ func runPullSync(remotePath string, localPath string) error {
 	remoteClient, err := remote.New(&remote.Config{
 		ServerURL:               serverURL + "/sapi/pull/" + remotePath,
 		AuthToken:               pullKey,
+		ReplicaID:               replicaID,
 		Timeout:                 timeout,
 		PingPong:                false,
 		Logger:                  logger.Named("remote"),
