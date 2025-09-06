@@ -365,7 +365,7 @@ func runPushSync(localPath string, remotePath string) error {
 		LocalHostname:           localHostname,
 		LocalAbsolutePath:       absLocalPath,
 		InspectionDepth:         inspectionDepth,
-		SendConfigCmd:           needsToBuildDashSQLRSyncFile(localPath),
+		SendConfigCmd:           needsToBuildDashSQLRSyncFile(localPath, remotePath),
 	})
 
 	if err != nil {
@@ -410,7 +410,7 @@ func runPushSync(localPath string, remotePath string) error {
 		logger.Warn("Failed to save local secrets config", zap.Error(err))
 	}
 
-	if needsToBuildDashSQLRSyncFile(localPath) {
+	if needsToBuildDashSQLRSyncFile(localPath, remotePath) {
 		token := remoteClient.GetNewPullKey()
 		replicaID := remoteClient.GetReplicaID()
 		replicaPath := remoteClient.GetReplicaPath()
@@ -447,13 +447,13 @@ func isValidVersion(version string) bool {
 	return false
 }
 
-func needsToBuildDashSQLRSyncFile(path string) bool {
+func needsToBuildDashSQLRSyncFile(filepath string, remotePath string) bool {
 	if !newReadToken {
 		return false
 	}
 	// check if the {path}-sqlrsync file exists
-	dashSQLRsync := NewDashSQLRsync(path)
-	return !dashSQLRsync.Exists()
+	dashSQLRsync := NewDashSQLRsync(filepath)
+	return !(dashSQLRsync.Exists() && dashSQLRsync.RemotePath == remotePath)
 }
 
 func runPullSync(remotePath string, localPath string) error {
@@ -489,7 +489,7 @@ func runPullSync(remotePath string, localPath string) error {
 		EnableTrafficInspection: inspectTraffic,
 		InspectionDepth:         inspectionDepth,
 		Version:                 version,
-		SendConfigCmd:           needsToBuildDashSQLRSyncFile(localPath),
+		SendConfigCmd:           needsToBuildDashSQLRSyncFile(localPath, remotePath),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create remote client: %w", err)
@@ -517,7 +517,7 @@ func runPullSync(remotePath string, localPath string) error {
 		return fmt.Errorf("pull synchronization failed: %w", err)
 	}
 
-	if needsToBuildDashSQLRSyncFile(localPath) {
+	if needsToBuildDashSQLRSyncFile(localPath, remotePath) {
 		token := remoteClient.GetNewPullKey()
 		dashSQLRsync := NewDashSQLRsync(localPath)
 		replicaID := remoteClient.GetReplicaID()
