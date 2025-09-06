@@ -416,7 +416,7 @@ func runPushSync(localPath string, remotePath string) error {
 		replicaPath := remoteClient.GetReplicaPath()
 
 		dashSQLRsync := NewDashSQLRsync(localPath)
-		if err := dashSQLRsync.Write(replicaPath, replicaID, token, serverURL); err != nil {
+		if err := dashSQLRsync.Write(replicaPath, localPath, replicaID, token, serverURL); err != nil {
 			return fmt.Errorf("failed to create shareable config file: %w", err)
 		}
 		fmt.Println("🔑 Shareable config file created:", dashSQLRsync.FilePath())
@@ -451,8 +451,10 @@ func needsToBuildDashSQLRSyncFile(filepath string, remotePath string) bool {
 	if !newReadToken {
 		return false
 	}
-	// check if the {path}-sqlrsync file exists
+
 	dashSQLRsync := NewDashSQLRsync(filepath)
+	dashSQLRsync.Read()
+	// check if the {path}-sqlrsync file exists
 	return !(dashSQLRsync.Exists() && dashSQLRsync.RemotePath == remotePath)
 }
 
@@ -521,7 +523,7 @@ func runPullSync(remotePath string, localPath string) error {
 		token := remoteClient.GetNewPullKey()
 		dashSQLRsync := NewDashSQLRsync(localPath)
 		replicaID := remoteClient.GetReplicaID()
-		if err := dashSQLRsync.Write(remotePath, replicaID, token, serverURL); err != nil {
+		if err := dashSQLRsync.Write(remotePath, localPath, replicaID, token, serverURL); err != nil {
 			return fmt.Errorf("failed to create shareable config file: %w", err)
 		}
 	}

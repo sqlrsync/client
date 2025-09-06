@@ -212,7 +212,7 @@ func NewDashSQLRsync(databasePath string) *DashSQLRsync {
 	if(strings.Contains(databasePath, "@")) {
 		databasePath = strings.Split(databasePath, "@")[0]
 	}
-	
+
 	return &DashSQLRsync{
 		DatabasePath: databasePath,
 	}
@@ -274,14 +274,17 @@ func (d *DashSQLRsync) Read() error {
 }
 
 // Write writes the -sqlrsync file with the given remote path and pull key
-func (d *DashSQLRsync) Write(remotePath string, replicaID string, pullKey string, serverURL string) error {
+func (d *DashSQLRsync) Write(remotePath string, localName string, replicaID string, pullKey string, serverURL string) error {
 	d.RemotePath = remotePath
 	d.PullKey = pullKey
 
+	localNameTree := strings.Split(localName, "/")
+	localName = localNameTree[len(localNameTree)-1]
+
 	content := fmt.Sprintf(`#!/bin/bash
 # https://sqlrsync.com/docs/-sqlrsync
-sqlrsync %s --replicaID=%s --pullKey=%s --server=%s
-`, remotePath, replicaID, pullKey, serverURL)
+sqlrsync %s %s --replicaID=%s --pullKey=%s --server=%s
+`, remotePath, localName, replicaID, pullKey, serverURL)
 
 	if err := os.WriteFile(d.FilePath(), []byte(content), 0755); err != nil {
 		return fmt.Errorf("failed to write -sqlrsync file: %w", err)
