@@ -205,6 +205,8 @@ func runSync(cmd *cobra.Command, args []string) error {
 					return fmt.Errorf("invalid -sqlrsync file: missing remote path")
 				}
 				pullKey = dashSQLRsync.PullKey
+				replicaID = dashSQLRsync.ReplicaID
+				serverURL = dashSQLRsync.Server
 				return runPullSync(dashSQLRsync.RemotePath, path)
 			}
 
@@ -468,6 +470,8 @@ func runPullSync(remotePath string, localPath string) error {
 			return fmt.Errorf("invalid version format: %s", version)
 		}
 	}
+
+	fmt.Println("PULLing down from " + serverURL + "/" + remotePath + "@" + version + " ...")
 
 	// Create remote client for WebSocket transport
 	remoteClient, err := remote.New(&remote.Config{

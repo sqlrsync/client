@@ -24,12 +24,12 @@ type LocalSecretsConfig struct {
 }
 
 type SQLRsyncDatabase struct {
-	LocalPath                     string `toml:"path,omitempty"`
-	Server                        string `toml:"server"`
-	CustomerSuppliedEncryptionKey string `toml:"customerSuppliedEncryptionKey,omitempty"`
-	ReplicaID                     string `toml:"replicaID"`
-	RemotePath                    string `toml:"remotePath,omitempty"`
-	PushKey                       string `toml:"pushKey,omitempty"`
+	LocalPath                     string    `toml:"path,omitempty"`
+	Server                        string    `toml:"server"`
+	CustomerSuppliedEncryptionKey string    `toml:"customerSuppliedEncryptionKey,omitempty"`
+	ReplicaID                     string    `toml:"replicaID"`
+	RemotePath                    string    `toml:"remotePath,omitempty"`
+	PushKey                       string    `toml:"pushKey,omitempty"`
 	LastPush                      time.Time `toml:"lastPush,omitempty"`
 }
 
@@ -38,6 +38,8 @@ type DashSQLRsync struct {
 	DatabasePath string
 	RemotePath   string
 	PullKey      string
+	Server       string
+	ReplicaID    string
 }
 
 func GetConfigDir() (string, error) {
@@ -253,6 +255,12 @@ func (d *DashSQLRsync) Read() error {
 				if strings.HasPrefix(part, "--pullKey=") {
 					d.PullKey = strings.TrimPrefix(part, "--pullKey=")
 				}
+				if strings.HasPrefix(part, "--replicaID=") {
+					d.ReplicaID = strings.TrimPrefix(part, "--replicaID=")
+				}
+				if strings.HasPrefix(part, "--server=") {
+					d.Server = strings.TrimPrefix(part, "--server=")
+				}
 			}
 			break
 		}
@@ -268,7 +276,7 @@ func (d *DashSQLRsync) Write(remotePath string, replicaID string, pullKey string
 
 	content := fmt.Sprintf(`#!/bin/bash
 # https://sqlrsync.com/docs/-sqlrsync
-sqlrsync %s --replicaID=%s --pullKey=%s --server="%s"
+sqlrsync %s --replicaID=%s --pullKey=%s --server=%s
 `, remotePath, replicaID, pullKey, serverURL)
 
 	if err := os.WriteFile(d.FilePath(), []byte(content), 0755); err != nil {
