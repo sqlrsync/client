@@ -324,6 +324,7 @@ func runPushSync(localPath string, remotePath string) error {
 			return fmt.Errorf("push key cannot be empty")
 		}
 		pushKey = token
+		fmt.Println()
 	}
 
 	logger.Info("Starting push synchronization to sqlrsync.com",
@@ -331,6 +332,8 @@ func runPushSync(localPath string, remotePath string) error {
 		zap.String("remote", remotePath),
 		zap.String("server", serverURL),
 		zap.Bool("dryRun", dryRun))
+
+	fmt.Println("PUSHing up to " + serverURL + " ...")
 
 	// Create local client for SQLite operations
 	localClient, err := bridge.New(&bridge.Config{

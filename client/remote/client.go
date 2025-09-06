@@ -337,12 +337,6 @@ func (c *Client) Read(buffer []byte) (int, error) {
 		return 0, fmt.Errorf("connection error: %w", lastErr)
 	}
 
-	// If sync is completed and connection is not active, exit immediately
-	if c.isSyncCompleted() && !c.isConnected() {
-		c.logger.Debug("Sync completed and connection not active - exiting immediately")
-		return 0, nil
-	}
-
 	select {
 	case <-c.ctx.Done():
 		return 0, fmt.Errorf("client context cancelled")
@@ -637,7 +631,7 @@ func (c *Client) readLoop() {
 			conn := c.conn
 			c.mu.RUnlock()
 
-			if conn == nil || c.isSyncCompleted(){
+			if conn == nil || c.isSyncCompleted() {
 				c.setConnected(false)
 				return
 			}

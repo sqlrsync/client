@@ -174,7 +174,9 @@ func go_local_read_callback(userData unsafe.Pointer, buffer *C.uint8_t, size C.i
 		if err.Error() != "connection lost" && err.Error() != "sync completed" {
 			client.Logger.Error("Connection to server had a failure.  Are you online?  Read callback error", zap.Error(err))
 		}
-		return -1
+		// For sync completion errors, return 0 to signal EOF gracefully
+		// This allows sqlite_rsync to finish processing any buffered data
+		return 0
 	}
 
 	client.Logger.Debug("Read callback", zap.Int("bytesRead", bytesRead))
