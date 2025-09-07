@@ -189,7 +189,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 			if err == nil {
 				// If we have a push key for this database, use it to push
 				pushedDBInfo := localSecretsConfig.FindDatabaseByPath(absPath)
-				if pushedDBInfo != nil && pushedDBInfo.PushKey != "" {
+				if pushedDBInfo != nil && pushedDBInfo.PushKey != "" && pushedDBInfo.Server == serverURL {
 					pushKey = pushedDBInfo.PushKey
 					return runPushSync(absPath, pushedDBInfo.RemotePath)
 				}
@@ -204,14 +204,16 @@ func runSync(cmd *cobra.Command, args []string) error {
 				if dashSQLRsync.RemotePath == "" {
 					return fmt.Errorf("invalid -sqlrsync file: missing remote path")
 				}
-				localPath := ""
-				version := "latest"
-				localPath, version, _ = strings.Cut(path, "@")
+				if dashSQLRsync.Server == serverURL {
+					localPath := ""
+					version := "latest"
+					localPath, version, _ = strings.Cut(path, "@")
 
-				pullKey = dashSQLRsync.PullKey
-				replicaID = dashSQLRsync.ReplicaID
-				serverURL = dashSQLRsync.Server
-				return runPullSync(dashSQLRsync.RemotePath+"@"+version, localPath)
+					pullKey = dashSQLRsync.PullKey
+					replicaID = dashSQLRsync.ReplicaID
+					serverURL = dashSQLRsync.Server
+					return runPullSync(dashSQLRsync.RemotePath+"@"+version, localPath)
+				}
 			}
 
 			// else push this file up
