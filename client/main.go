@@ -23,6 +23,7 @@ var (
 	serverURL       string
 	verbose         bool
 	dryRun          bool
+	setPublic       bool
 	timeout         int
 	logger          *zap.Logger
 	inspectTraffic  bool
@@ -302,7 +303,15 @@ func runPushSync(localPath string, remotePath string) error {
 			Server:    serverURL,
 		}
 	} else {
-		serverURL = dbConfig.Server
+		if serverURL == "" {
+			serverURL = dbConfig.Server
+		}
+		if pushKey == "" {
+			pushKey = dbConfig.PushKey
+		}
+		if remotePath == "" {
+			remotePath = dbConfig.RemotePath
+		}
 	}
 
 	if remotePath == "" {
@@ -368,6 +377,7 @@ func runPushSync(localPath string, remotePath string) error {
 		LocalAbsolutePath:       absLocalPath,
 		InspectionDepth:         inspectionDepth,
 		SendConfigCmd:           needsToBuildDashSQLRSyncFile(localPath, remotePath),
+		SetPublic:               setPublic,
 	})
 
 	if err != nil {
@@ -400,7 +410,7 @@ func runPushSync(localPath string, remotePath string) error {
 
 	dbConfig.LastPush = time.Now()
 	if remoteClient.GetNewPushKey() != "" {
-		fmt.Println("🔑 This database is now PUSH-enabled.")
+		fmt.Println("🔑 This database is now PUSH-enabled on this system.")
 		fmt.Println("   A new, replica-specific PUSH key has been stored at ~/.config/sqlrsync/local-secrets.toml")
 		dbConfig.ReplicaID = remoteClient.GetReplicaID()
 		dbConfig.RemotePath = remoteClient.GetReplicaPath()
@@ -410,6 +420,11 @@ func runPushSync(localPath string, remotePath string) error {
 	// Save the updated config
 	if err := SaveLocalSecretsConfig(localSecretsConfig); err != nil {
 		logger.Warn("Failed to save local secrets config", zap.Error(err))
+	}
+
+	if setPublic {
+		fmt.Println("🌐 This replica is now publicly accessible.")
+		fmt.Println("   Share this database with sqlrsync.com/" + remoteClient.GetReplicaPath())
 	}
 
 	if needsToBuildDashSQLRSyncFile(localPath, remotePath) {
@@ -585,6 +600,7 @@ func init() {
 	rootCmd.Flags().StringVar(&replicaID, "replicaID", "", "Replica ID for the remote database (overwrites the REMOTE path)")
 	rootCmd.Flags().StringVarP(&serverURL, "server", "s", "wss://sqlrsync.com", "Server URL for push/pull operations")
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging")
+	rootCmd.Flags().BoolVar(&setPublic, "public", false, "Enable public access to the replica (only for push operations)")
 	rootCmd.Flags().BoolVar(&newReadToken, "storeNewReadToken", true, "After syncing, the server creates a new read-only token that is stored in the -sqlrsync file adjacent to the local database")
 	rootCmd.Flags().BoolVar(&dryRun, "dry", false, "Perform a dry run without making changes")
 	rootCmd.Flags().IntVarP(&timeout, "timeout", "t", 8000, "Connection timeout in milliseconds (Max 10 seconds)")

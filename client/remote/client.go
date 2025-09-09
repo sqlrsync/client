@@ -158,6 +158,7 @@ type Config struct {
 	ServerURL               string
 	Version                 string
 	ReplicaID               string
+	SetPublic               bool // for PUSH 
 	Timeout                 int // in milliseconds
 	Logger                  *zap.Logger
 	EnableTrafficInspection bool // Enable detailed traffic logging
@@ -206,6 +207,7 @@ type Client struct {
 	NewPushKey  string
 	ReplicaID   string
 	ReplicaPath string
+	SetPublic   bool
 }
 
 // New creates a new remote WebSocket client
@@ -276,6 +278,10 @@ func (c *Client) Connect() error {
 	}
 	if c.config.ReplicaID != "" {
 		headers.Set("X-ReplicaID", c.config.ReplicaID)
+	}
+
+	if c.config.SetPublic {
+		headers.Set("X-SetPublic", fmt.Sprintf("%t", c.config.SetPublic))
 	}
 
 	conn, response, err := dialer.DialContext(connectCtx, u.String(), headers)
