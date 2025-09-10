@@ -277,12 +277,13 @@ static void *websocket_read_thread(void *arg)
     }
     else if (bytes_read == 0)
     {
-      // No more data, close write end to signal EOF
+      // 0 bytes indicates EOF from the Go callback (sync completed)
+      // Close write end to signal EOF to sqlite_rsync
       break;
     }
     else
     {
-      // Error occurred
+      // Negative value indicates a real error
       break;
     }
   }

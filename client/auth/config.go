@@ -1,4 +1,4 @@
-package main
+package auth
 
 import (
 	"bufio"
@@ -11,18 +11,19 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// .config/sqlrsync/defaults.toml
+// DefaultsConfig represents ~/.config/sqlrsync/defaults.toml
 type DefaultsConfig struct {
 	Defaults struct {
 		Server string `toml:"server"`
 	} `toml:"defaults"`
 }
 
-// .config/sqlrsync/local-secrets.toml
+// LocalSecretsConfig represents ~/.config/sqlrsync/local-secrets.toml
 type LocalSecretsConfig struct {
 	SQLRsyncDatabases []SQLRsyncDatabase `toml:"sqlrsync-databases"`
 }
 
+// SQLRsyncDatabase represents a configured database with auth info
 type SQLRsyncDatabase struct {
 	LocalPath                     string    `toml:"path,omitempty"`
 	Server                        string    `toml:"server"`
@@ -42,6 +43,7 @@ type DashSQLRsync struct {
 	ReplicaID    string
 }
 
+// GetConfigDir returns the sqlrsync config directory path
 func GetConfigDir() (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -50,6 +52,7 @@ func GetConfigDir() (string, error) {
 	return filepath.Join(homeDir, ".config", "sqlrsync"), nil
 }
 
+// GetDefaultsPath returns the path to defaults.toml
 func GetDefaultsPath() (string, error) {
 	configDir, err := GetConfigDir()
 	if err != nil {
@@ -58,6 +61,7 @@ func GetDefaultsPath() (string, error) {
 	return filepath.Join(configDir, "defaults.toml"), nil
 }
 
+// GetLocalSecretsPath returns the path to local-secrets.toml
 func GetLocalSecretsPath() (string, error) {
 	configDir, err := GetConfigDir()
 	if err != nil {
@@ -66,6 +70,7 @@ func GetLocalSecretsPath() (string, error) {
 	return filepath.Join(configDir, "local-secrets.toml"), nil
 }
 
+// LoadDefaultsConfig loads the defaults configuration
 func LoadDefaultsConfig() (*DefaultsConfig, error) {
 	path, err := GetDefaultsPath()
 	if err != nil {
@@ -96,6 +101,7 @@ func LoadDefaultsConfig() (*DefaultsConfig, error) {
 	return &config, nil
 }
 
+// SaveDefaultsConfig saves the defaults configuration
 func SaveDefaultsConfig(config *DefaultsConfig) error {
 	path, err := GetDefaultsPath()
 	if err != nil {
@@ -121,6 +127,7 @@ func SaveDefaultsConfig(config *DefaultsConfig) error {
 	return nil
 }
 
+// LoadLocalSecretsConfig loads the local secrets configuration
 func LoadLocalSecretsConfig() (*LocalSecretsConfig, error) {
 	path, err := GetLocalSecretsPath()
 	if err != nil {
@@ -146,6 +153,7 @@ func LoadLocalSecretsConfig() (*LocalSecretsConfig, error) {
 	return &config, nil
 }
 
+// SaveLocalSecretsConfig saves the local secrets configuration
 func SaveLocalSecretsConfig(config *LocalSecretsConfig) error {
 	path, err := GetLocalSecretsPath()
 	if err != nil {
@@ -176,15 +184,39 @@ func SaveLocalSecretsConfig(config *LocalSecretsConfig) error {
 	return nil
 }
 
+// FindDatabaseByPath finds a database configuration by local path
 func (c *LocalSecretsConfig) FindDatabaseByPath(path string) *SQLRsyncDatabase {
+	// Normalize the search path to absolute path
+	searchPath, err := filepath.Abs(path)
+	if err != nil {
+		// If we can't get absolute path, fall back to original comparison
+		for i := range c.SQLRsyncDatabases {
+			if c.SQLRsyncDatabases[i].LocalPath == path {
+				return &c.SQLRsyncDatabases[i]
+			}
+		}
+		return nil
+	}
+
 	for i := range c.SQLRsyncDatabases {
-		if c.SQLRsyncDatabases[i].LocalPath == path {
-			return &c.SQLRsyncDatabases[i]
+		// Normalize the stored path to absolute path for comparison
+		storedPath, err := filepath.Abs(c.SQLRsyncDatabases[i].LocalPath)
+		if err != nil {
+			// If we can't normalize stored path, compare as-is
+			if c.SQLRsyncDatabases[i].LocalPath == path || c.SQLRsyncDatabases[i].LocalPath == searchPath {
+				return &c.SQLRsyncDatabases[i]
+			}
+		} else {
+			// Compare normalized absolute paths
+			if storedPath == searchPath {
+				return &c.SQLRsyncDatabases[i]
+			}
 		}
 	}
 	return nil
 }
 
+// UpdateOrAddDatabase updates an existing database or adds a new one
 func (c *LocalSecretsConfig) UpdateOrAddDatabase(db SQLRsyncDatabase) {
 	for i := range c.SQLRsyncDatabases {
 		if c.SQLRsyncDatabases[i].LocalPath == db.LocalPath {
@@ -197,6 +229,7 @@ func (c *LocalSecretsConfig) UpdateOrAddDatabase(db SQLRsyncDatabase) {
 	c.SQLRsyncDatabases = append(c.SQLRsyncDatabases, db)
 }
 
+// RemoveDatabase removes a database configuration by local path
 func (c *LocalSecretsConfig) RemoveDatabase(path string) {
 	for i, db := range c.SQLRsyncDatabases {
 		if db.LocalPath == path {
