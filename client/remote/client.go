@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	SQLRSYNC_NEEDREADKEY = 0x51 // Send to request a new read key
+	SQLRSYNC_CONFIG = 0x51 // Send to keys and replicaID
 )
 
 // TrafficInspector provides traffic inspection and protocol message detection
@@ -143,7 +143,7 @@ func (t *TrafficInspector) parseMessageType(data []byte) string {
 	case 0x67: // REPLICA_CONFIG
 		return "REPLICA_CONFIG"
 	case 0x51:
-		return "SQLRSYNC_NEEDREADKEY"
+		return "SQLRSYNC_CONFIG"
 	default:
 		// For unknown messages, classify by first byte
 		if firstByte >= 32 && firstByte <= 126 {
@@ -157,13 +157,15 @@ func (t *TrafficInspector) parseMessageType(data []byte) string {
 type Config struct {
 	ServerURL               string
 	Version                 string
+	ReplicaID               string
+	SetPublic               bool // for PUSH 
 	Timeout                 int // in milliseconds
 	Logger                  *zap.Logger
 	EnableTrafficInspection bool // Enable detailed traffic logging
 	InspectionDepth         int  // How many bytes to inspect (default: 32)
 	PingPong                bool
 	AuthToken               string
-	RequestReadToken        bool // the -sqlrsync file doesn't exist, so make a token
+	SendConfigCmd           bool // the -sqlrsync file doesn't exist, so make a token
 	LocalHostname           string
 	LocalAbsolutePath       string
 }
@@ -201,7 +203,11 @@ type Client struct {
 	syncMu        sync.RWMutex
 
 	// sqlrsync specific
-	NewReadToken string
+	NewPullKey  string
+	NewPushKey  string
+	ReplicaID   string
+	ReplicaPath string
+	SetPublic   bool
 }
 
 // New creates a new remote WebSocket client
@@ -267,10 +273,19 @@ func (c *Client) Connect() error {
 	if c.config.LocalAbsolutePath != "" {
 		headers.Set("X-LocalAbsolutePath", c.config.LocalAbsolutePath)
 	}
+	if c.config.Version != "" {
+		headers.Set("X-ReplicaVersion", strings.Replace(c.config.Version, "latest", "", 1))
+	}
+	if c.config.ReplicaID != "" {
+		headers.Set("X-ReplicaID", c.config.ReplicaID)
+	}
+
+	if c.config.SetPublic {
+		headers.Set("X-SetPublic", fmt.Sprintf("%t", c.config.SetPublic))
+	}
 
 	conn, response, err := dialer.DialContext(connectCtx, u.String(), headers)
 	if err != nil {
-		fmt.Println("Failed to connect:", err)
 		respStr, _ := io.ReadAll(response.Body)
 		return fmt.Errorf("%s", respStr)
 	}
@@ -333,12 +348,6 @@ func (c *Client) Read(buffer []byte) (int, error) {
 			return 0, fmt.Errorf("connection lost")
 		}
 		return 0, fmt.Errorf("connection error: %w", lastErr)
-	}
-
-	// If sync is completed and connection is not active, exit immediately
-	if c.isSyncCompleted() && !c.isConnected() {
-		c.logger.Debug("Sync completed and connection not active - exiting immediately")
-		return 0, nil
 	}
 
 	select {
@@ -635,13 +644,13 @@ func (c *Client) readLoop() {
 			conn := c.conn
 			c.mu.RUnlock()
 
-			if conn == nil {
+			if conn == nil || c.isSyncCompleted() {
 				c.setConnected(false)
 				return
 			}
 
 			// Set read deadline
-			conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+			conn.SetReadDeadline(time.Now().Add(9 * time.Second))
 
 			messageType, data, err := conn.ReadMessage()
 			if err != nil {
@@ -682,10 +691,29 @@ func (c *Client) readLoop() {
 			}
 
 			if messageType == websocket.TextMessage {
-				readKeyCmd := "NEWREADKEY="
+				accessKeyLength := 22
+				replicaIDLength := 18
+				readPullKeyResp := "NEWPULLKEY="
+				readPushKeyResp := "NEWPUSHKEY="
+				replicaIDResp := "REPLICAID="
+				replicaPathResp := "REPLICAPATH="
+				// Handle text messages for NEWPULLKEY, NEWPUSHKEY, REPLICAID
+				// Example: "NEWPULLKEY=xxxxxxxxxxxxxxxxxxxxxx"
 				strData := string(data)
-				if (len(data) >= len(readKeyCmd)+22) && strings.HasPrefix(strData, readKeyCmd) {
-					c.NewReadToken = strData[len(readKeyCmd) : len(readKeyCmd)+22]
+				if (len(data) >= len(readPullKeyResp)+accessKeyLength) && strings.HasPrefix(strData, readPullKeyResp) {
+					c.NewPullKey = strData[len(readPullKeyResp):]
+					c.logger.Debug("📥 Received new Pull Key:", zap.String("key", c.NewPullKey))
+				} else if (len(data) >= len(readPushKeyResp)+accessKeyLength) && strings.HasPrefix(strData, readPushKeyResp) {
+
+					c.NewPushKey = strData[len(readPushKeyResp):]
+					c.logger.Debug("📥 Received new Push Key:", zap.String("key", c.NewPushKey))
+				} else if (len(data) >= len(replicaIDResp)+replicaIDLength) && strings.HasPrefix(strData, replicaIDResp) {
+					c.ReplicaID = strData[len(replicaIDResp):]
+					c.logger.Debug("📥 Received Replica ID:", zap.String("id", c.ReplicaID))
+				} else if (len(data) >= len(replicaPathResp)) && strings.HasPrefix(strData, replicaPathResp) {
+
+					c.ReplicaPath = strData[len(replicaPathResp):]
+					c.logger.Debug("📥 Received new Replica Path:", zap.String("path", c.ReplicaPath))
 				}
 				continue
 			}
@@ -768,10 +796,10 @@ func (c *Client) writeLoop() {
 				return
 			}
 
-			if c.config.RequestReadToken {
-				conn.WriteMessage(websocket.BinaryMessage, []byte{SQLRSYNC_NEEDREADKEY})
-				c.config.RequestReadToken = false
-				c.logger.Debug("🔑 Also asked for a new read token.")
+			if c.config.SendConfigCmd {
+				conn.WriteMessage(websocket.BinaryMessage, []byte{SQLRSYNC_CONFIG})
+				c.config.SendConfigCmd = false
+				c.logger.Debug("🔑 Also asked for keys and replicaID.")
 			}
 
 			c.logger.Debug("Sent message to remote", zap.Int("bytes", len(data)))
@@ -779,6 +807,17 @@ func (c *Client) writeLoop() {
 	}
 }
 
-func (c *Client) GetNewReadToken() string {
-	return c.NewReadToken
+func (c *Client) GetNewPullKey() string {
+	return c.NewPullKey
+}
+
+func (c *Client) GetNewPushKey() string {
+	return c.NewPushKey
+}
+
+func (c *Client) GetReplicaID() string {
+	return c.ReplicaID
+}
+func (c *Client) GetReplicaPath() string {
+	return c.ReplicaPath
 }

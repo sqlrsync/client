@@ -11,26 +11,26 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// .config/sqlrsync/defaults.toml
 type DefaultsConfig struct {
 	Defaults struct {
 		Server string `toml:"server"`
 	} `toml:"defaults"`
 }
 
+// .config/sqlrsync/local-secrets.toml
 type LocalSecretsConfig struct {
-	Local struct {
-		Hostname                       string `toml:"hostname"`
-		DefaultClientSideEncryptionKey string `toml:"defaultClientSideEncryptionKey"`
-	} `toml:"local"`
 	SQLRsyncDatabases []SQLRsyncDatabase `toml:"sqlrsync-databases"`
 }
 
 type SQLRsyncDatabase struct {
-	Path                    string    `toml:"path"`
-	ReplicaID               string    `toml:"replicaID,omitempty"`
-	ClientSideEncryptionKey string    `toml:"clientSideEncryptionKey,omitempty"`
-	LastUpdated             time.Time `toml:"lastUpdated,omitempty"`
-	Server                  string    `toml:"server,omitempty"`
+	LocalPath                     string    `toml:"path,omitempty"`
+	Server                        string    `toml:"server"`
+	CustomerSuppliedEncryptionKey string    `toml:"customerSuppliedEncryptionKey,omitempty"`
+	ReplicaID                     string    `toml:"replicaID"`
+	RemotePath                    string    `toml:"remotePath,omitempty"`
+	PushKey                       string    `toml:"pushKey,omitempty"`
+	LastPush                      time.Time `toml:"lastPush,omitempty"`
 }
 
 // DashSQLRsync manages the -sqlrsync file for a database
@@ -38,6 +38,8 @@ type DashSQLRsync struct {
 	DatabasePath string
 	RemotePath   string
 	PullKey      string
+	Server       string
+	ReplicaID    string
 }
 
 func GetConfigDir() (string, error) {
@@ -176,7 +178,7 @@ func SaveLocalSecretsConfig(config *LocalSecretsConfig) error {
 
 func (c *LocalSecretsConfig) FindDatabaseByPath(path string) *SQLRsyncDatabase {
 	for i := range c.SQLRsyncDatabases {
-		if c.SQLRsyncDatabases[i].Path == path {
+		if c.SQLRsyncDatabases[i].LocalPath == path {
 			return &c.SQLRsyncDatabases[i]
 		}
 	}
@@ -185,7 +187,7 @@ func (c *LocalSecretsConfig) FindDatabaseByPath(path string) *SQLRsyncDatabase {
 
 func (c *LocalSecretsConfig) UpdateOrAddDatabase(db SQLRsyncDatabase) {
 	for i := range c.SQLRsyncDatabases {
-		if c.SQLRsyncDatabases[i].Path == db.Path {
+		if c.SQLRsyncDatabases[i].LocalPath == db.LocalPath {
 			// Update existing database
 			c.SQLRsyncDatabases[i] = db
 			return
@@ -197,7 +199,7 @@ func (c *LocalSecretsConfig) UpdateOrAddDatabase(db SQLRsyncDatabase) {
 
 func (c *LocalSecretsConfig) RemoveDatabase(path string) {
 	for i, db := range c.SQLRsyncDatabases {
-		if db.Path == path {
+		if db.LocalPath == path {
 			// Remove database from slice
 			c.SQLRsyncDatabases = append(c.SQLRsyncDatabases[:i], c.SQLRsyncDatabases[i+1:]...)
 			return
@@ -205,16 +207,12 @@ func (c *LocalSecretsConfig) RemoveDatabase(path string) {
 	}
 }
 
-func (c *LocalSecretsConfig) SetHostname(hostname string) {
-	c.Local.Hostname = hostname
-}
-
-func (c *LocalSecretsConfig) SetDefaultEncryptionKey(key string) {
-	c.Local.DefaultClientSideEncryptionKey = key
-}
-
 // NewDashSQLRsync creates a new DashSQLRsync instance for the given database path
 func NewDashSQLRsync(databasePath string) *DashSQLRsync {
+	if(strings.Contains(databasePath, "@")) {
+		databasePath = strings.Split(databasePath, "@")[0]
+	}
+
 	return &DashSQLRsync{
 		DatabasePath: databasePath,
 	}
@@ -246,20 +244,26 @@ func (d *DashSQLRsync) Read() error {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		
+
 		if strings.HasPrefix(line, "#") || line == "" {
 			continue
 		}
-		
+
 		if strings.HasPrefix(line, "sqlrsync ") {
 			parts := strings.Fields(line)
 			if len(parts) >= 2 {
 				d.RemotePath = parts[1]
 			}
-			
+
 			for _, part := range parts {
 				if strings.HasPrefix(part, "--pullKey=") {
 					d.PullKey = strings.TrimPrefix(part, "--pullKey=")
+				}
+				if strings.HasPrefix(part, "--replicaID=") {
+					d.ReplicaID = strings.TrimPrefix(part, "--replicaID=")
+				}
+				if strings.HasPrefix(part, "--server=") {
+					d.Server = strings.TrimPrefix(part, "--server=")
 				}
 			}
 			break
@@ -270,14 +274,17 @@ func (d *DashSQLRsync) Read() error {
 }
 
 // Write writes the -sqlrsync file with the given remote path and pull key
-func (d *DashSQLRsync) Write(remotePath string, pullKey string) error {
+func (d *DashSQLRsync) Write(remotePath string, localName string, replicaID string, pullKey string, serverURL string) error {
 	d.RemotePath = remotePath
 	d.PullKey = pullKey
 
+	localNameTree := strings.Split(localName, "/")
+	localName = localNameTree[len(localNameTree)-1]
+
 	content := fmt.Sprintf(`#!/bin/bash
-# https://sqlrsync.com/docs/pullfile
-sqlrsync %s --pullKey=%s
-`, remotePath, pullKey)
+# https://sqlrsync.com/docs/-sqlrsync
+sqlrsync %s %s --replicaID=%s --pullKey=%s --server=%s
+`, remotePath, localName, replicaID, pullKey, serverURL)
 
 	if err := os.WriteFile(d.FilePath(), []byte(content), 0755); err != nil {
 		return fmt.Errorf("failed to write -sqlrsync file: %w", err)
