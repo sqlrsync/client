@@ -282,7 +282,7 @@ func (d *DashSQLRsync) Write(remotePath string, localName string, replicaID stri
 	localName = localNameTree[len(localNameTree)-1]
 
 	content := fmt.Sprintf(`#!/bin/bash
-# https://sqlrsync.com/docs/-sqlrsync
+# https://sqlrsync.com/help/dash-sqlrsync
 sqlrsync %s %s --replicaID=%s --pullKey=%s --server=%s
 `, remotePath, localName, replicaID, pullKey, serverURL)
 
