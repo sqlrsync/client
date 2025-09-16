@@ -15,7 +15,8 @@ import (
 )
 
 const (
-	SQLRSYNC_CONFIG = 0x51 // Send to keys and replicaID
+	SQLRSYNC_CONFIG          = 0x51 // Send to keys and replicaID
+	SQLRSYNC_NEWREPLICAVERSION = 0x52 // New version available
 )
 
 // TrafficInspector provides traffic inspection and protocol message detection
@@ -144,6 +145,8 @@ func (t *TrafficInspector) parseMessageType(data []byte) string {
 		return "REPLICA_CONFIG"
 	case 0x51:
 		return "SQLRSYNC_CONFIG"
+	case 0x52:
+		return "SQLRSYNC_NEWREPLICAVERSION"
 	default:
 		// For unknown messages, classify by first byte
 		if firstByte >= 32 && firstByte <= 126 {
@@ -158,8 +161,9 @@ type Config struct {
 	ServerURL               string
 	Version                 string
 	ReplicaID               string
-	SetPublic               bool // for PUSH 
-	Timeout                 int // in milliseconds
+	Subscribe               bool
+	SetPublic               bool // for PUSH
+	Timeout                 int  // in milliseconds
 	Logger                  *zap.Logger
 	EnableTrafficInspection bool // Enable detailed traffic logging
 	InspectionDepth         int  // How many bytes to inspect (default: 32)
@@ -203,11 +207,12 @@ type Client struct {
 	syncMu        sync.RWMutex
 
 	// sqlrsync specific
-	NewPullKey  string
-	NewPushKey  string
-	ReplicaID   string
-	ReplicaPath string
-	SetPublic   bool
+	NewPullKey     string
+	NewPushKey     string
+	ReplicaID      string
+	ReplicaPath    string
+	SetPublic      bool
+	newVersionChan chan struct{}
 }
 
 // New creates a new remote WebSocket client
@@ -229,14 +234,15 @@ func New(config *Config) (*Client, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	client := &Client{
-		config:        config,
-		logger:        config.Logger,
-		ctx:           ctx,
-		cancel:        cancel,
-		readQueue:     make(chan []byte, 8202),
-		writeQueue:    make(chan []byte, 100),
-		reconnectChan: make(chan struct{}, 1),
-		inspector:     NewTrafficInspector(config.Logger, inspectionDepth),
+		config:         config,
+		logger:         config.Logger,
+		ctx:            ctx,
+		cancel:         cancel,
+		readQueue:      make(chan []byte, 8202),
+		writeQueue:     make(chan []byte, 100),
+		reconnectChan:  make(chan struct{}, 1),
+		inspector:      NewTrafficInspector(config.Logger, inspectionDepth),
+		newVersionChan: make(chan struct{}, 1),
 	}
 	return client, nil
 }
@@ -283,6 +289,9 @@ func (c *Client) Connect() error {
 	if c.config.SetPublic {
 		headers.Set("X-SetPublic", fmt.Sprintf("%t", c.config.SetPublic))
 	}
+	if c.config.Subscribe {
+		headers.Set("X-Subscribe", "1")
+	}
 
 	conn, response, err := dialer.DialContext(connectCtx, u.String(), headers)
 	if err != nil {
@@ -300,7 +309,7 @@ func (c *Client) Connect() error {
 	// Set up ping/pong handlers for connection health
 	conn.SetPingHandler(func(data string) error {
 		c.logger.Debug("Received ping from server")
-		return conn.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(8*time.Second))
+		return conn.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(5*time.Second))
 	})
 
 	conn.SetPongHandler(func(data string) error {
@@ -375,11 +384,19 @@ func (c *Client) Read(buffer []byte) (int, error) {
 		if isOriginEnd {
 			c.logger.Info("ORIGIN_END received from server - sync completing")
 			c.setSyncCompleted(true)
+			// In subscribe mode, continue reading for new version notifications
+			if c.config.Subscribe {
+				c.logger.Info("Subscribe mode: continuing to listen for new version notifications")
+			}
 		}
 
 		return bytesRead, nil
 	case <-time.After(func() time.Duration {
-		// Use a much shorter timeout if sync is completed
+		// In subscribe mode, use very long timeout to accommodate hibernated connections
+		if c.config.Subscribe {
+			return 1 * time.Hour
+		}
+		// Use a much shorter timeout if sync is completed (non-subscribe mode)
 		if c.isSyncCompleted() {
 			return 100 * time.Millisecond
 		}
@@ -389,9 +406,13 @@ func (c *Client) Read(buffer []byte) (int, error) {
 		if !c.isConnected() {
 			return 0, fmt.Errorf("connection lost")
 		}
-		// If sync is completed, don't wait long
+		// If sync is completed and not in subscribe mode, don't wait long
 		if c.isSyncCompleted() {
 			return 0, nil
+		}
+		// In subscribe mode, continue reading even after timeouts
+		if c.config.Subscribe {
+			return 0, nil // Return 0 bytes but no error, allowing caller to retry
 		}
 		return 0, fmt.Errorf("read timeout")
 	}
@@ -408,8 +429,9 @@ func (c *Client) setSyncCompleted(completed bool) {
 func (c *Client) isSyncCompleted() bool {
 	c.syncMu.RLock()
 	defer c.syncMu.RUnlock()
-	return c.syncCompleted
+	return c.syncCompleted && !c.config.Subscribe
 }
+
 
 // handleOutboundTraffic inspects outbound data and handles sync completion detection
 func (c *Client) handleOutboundTraffic(data []byte) {
@@ -560,7 +582,14 @@ func (c *Client) pingLoop() {
 	c.logger.Debug("Starting ping loop")
 	defer c.logger.Debug("Ping loop terminated")
 
-	ticker := time.NewTicker(30 * time.Second)
+	// Use longer ping interval in subscribe mode to accommodate hibernated connections
+	pingInterval := 1 * time.Minute
+	if c.config.Subscribe {
+		pingInterval = 25 * time.Minute
+		c.logger.Info("Subscribe mode: using 25-minute ping interval for hibernated connections")
+	}
+
+	ticker := time.NewTicker(pingInterval)
 	defer ticker.Stop()
 
 	// Check connection status more frequently to exit quickly when disconnected
@@ -586,14 +615,25 @@ func (c *Client) pingLoop() {
 				return
 			}
 
-			err := conn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(10*time.Second))
+			// Use longer ping timeout in subscribe mode
+			pingTimeout := 10 * time.Second
+			if c.config.Subscribe {
+				pingTimeout = 30 * time.Second
+			}
+
+			err := conn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(pingTimeout))
 			if err != nil {
 				c.logger.Error("Failed to send ping", zap.Error(err))
 				c.setError(err)
 				c.setConnected(false)
 				return
 			}
-			c.logger.Debug("Sent ping to server")
+
+			if c.config.Subscribe {
+				c.logger.Info("Sent ping to hibernated server connection")
+			} else {
+				c.logger.Debug("Sent ping to server")
+			}
 		}
 	}
 }
@@ -644,16 +684,36 @@ func (c *Client) readLoop() {
 			conn := c.conn
 			c.mu.RUnlock()
 
-			if conn == nil || c.isSyncCompleted() {
+			if conn == nil {
 				c.setConnected(false)
 				return
 			}
 
-			// Set read deadline
-			conn.SetReadDeadline(time.Now().Add(9 * time.Second))
+			// In subscribe mode, continue even after sync completion
+			if c.isSyncCompleted() && !c.config.Subscribe {
+				c.setConnected(false)
+				return
+			}
+
+			// In subscribe mode, if connection failed, don't continue reading
+			if c.config.Subscribe && c.GetLastError() != nil {
+				c.logger.Debug("Connection has error in subscribe mode, exiting read loop")
+				c.setConnected(false)
+				return
+			}
+
+			// Set read deadline - much longer timeout in subscribe mode for hibernated connections
+			timeout := 9 * time.Second
+			if c.config.Subscribe {
+				// In subscribe mode, use very long timeout (1 hour) to allow for hibernated connections
+				timeout = 1 * time.Hour
+			}
+			conn.SetReadDeadline(time.Now().Add(timeout))
 
 			messageType, data, err := conn.ReadMessage()
 			if err != nil {
+				c.logger.Debug("ReadMessage error", zap.Error(err))
+
 				// Check if this is an expected/normal connection closure
 				if websocket.IsCloseError(err,
 					websocket.CloseNoStatusReceived, // 1005 - normal close from server after ORIGIN_END
@@ -732,6 +792,17 @@ func (c *Client) readLoop() {
 			if msgType == "ORIGIN_END" {
 				c.logger.Info("ORIGIN_END detected in read loop - sync will complete")
 				c.setSyncCompleted(true)
+			} else if msgType == "SQLRSYNC_NEWREPLICAVERSION" && c.config.Subscribe {
+				// Handle new version notification in subscribe mode
+				c.logger.Info("SQLRSYNC_NEWREPLICAVERSION (0x52) received - new version available!")
+				select {
+				case c.newVersionChan <- struct{}{}:
+					c.logger.Debug("New version notification sent to channel")
+				default:
+					c.logger.Debug("New version channel already has pending notification")
+				}
+				// Don't queue this message for normal reading
+				continue
 			}
 
 			// Queue the data for reading
@@ -820,4 +891,65 @@ func (c *Client) GetReplicaID() string {
 }
 func (c *Client) GetReplicaPath() string {
 	return c.ReplicaPath
+}
+
+// WaitForNewVersion blocks until a new version notification is received (0x52)
+// Returns nil when a new version is available, or an error if the connection is lost
+func (c *Client) WaitForNewVersion() error {
+	if !c.config.Subscribe {
+		return fmt.Errorf("subscribe mode not enabled")
+	}
+
+	c.logger.Info("Waiting for new version notification...")
+
+	// Check if connection is still alive
+	if !c.isConnected() {
+		return fmt.Errorf("connection lost")
+	}
+
+	// Check if there's already a notification pending
+	select {
+	case <-c.newVersionChan:
+		c.logger.Info("Found pending new version notification!")
+		return nil
+	default:
+		// No pending notification, continue to blocking wait
+	}
+
+	c.logger.Debug("No pending notifications, blocking wait...")
+
+	// Use a ticker to periodically check for context cancellation
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			c.logger.Debug("Context cancelled during new version wait")
+			return fmt.Errorf("client context cancelled")
+		case <-c.newVersionChan:
+			c.logger.Info("New version notification received from blocking wait!")
+			return nil
+		case <-ticker.C:
+			// Check if connection is still alive
+			if !c.isConnected() {
+				return fmt.Errorf("connection lost while waiting")
+			}
+			// Continue waiting
+		}
+	}
+}
+
+// ResetForNewSync prepares the client for a new sync operation while maintaining the connection
+func (c *Client) ResetForNewSync() {
+	c.setSyncCompleted(false)
+	// Clear any pending data in the read queue
+	for {
+		select {
+		case <-c.readQueue:
+			// Drain the queue
+		default:
+			return
+		}
+	}
 }

@@ -2,12 +2,15 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/fatih/color"
@@ -26,6 +29,7 @@ var (
 	setPublic       bool
 	timeout         int
 	logger          *zap.Logger
+	subscribe       bool
 	inspectTraffic  bool
 	inspectionDepth int
 	newReadToken    bool
@@ -480,7 +484,8 @@ func runPullSync(remotePath string, localPath string) error {
 		zap.String("remote", remotePath),
 		zap.String("local", localPath),
 		zap.String("server", serverURL),
-		zap.Bool("dryRun", dryRun))
+		zap.Bool("dryRun", dryRun),
+		zap.Bool("subscribe", subscribe))
 
 	version := "latest"
 	// if remotePath has an @, then we want to pass that version through
@@ -504,8 +509,9 @@ func runPullSync(remotePath string, localPath string) error {
 		AuthToken:               pullKey,
 		ReplicaID:               replicaID,
 		Timeout:                 timeout,
-		PingPong:                false,
+		PingPong:                subscribe, // Enable ping/pong in subscribe mode for connection health
 		Logger:                  logger.Named("remote"),
+		Subscribe:               subscribe,
 		EnableTrafficInspection: inspectTraffic,
 		InspectionDepth:         inspectionDepth,
 		Version:                 version,
@@ -521,6 +527,16 @@ func runPullSync(remotePath string, localPath string) error {
 		return fmt.Errorf("%w", err)
 	}
 
+	// If subscribe mode is enabled, run the subscription loop
+	if subscribe {
+		return runSubscribedPullSync(localPath, remotePath, remoteClient)
+	}
+
+	// Otherwise, perform a single pull sync
+	return performSinglePullSync(localPath, remotePath, remoteClient)
+}
+
+func performSinglePullSync(localPath string, remotePath string, remoteClient *remote.Client) error {
 	// Create local client for SQLite operations
 	localClient, err := bridge.New(&bridge.Config{
 		DatabasePath: localPath,
@@ -548,6 +564,120 @@ func runPullSync(remotePath string, localPath string) error {
 
 	logger.Info("Pull synchronization completed successfully")
 	return nil
+}
+
+func runSubscribedPullSync(localPath string, remotePath string, remoteClient *remote.Client) error {
+	fmt.Println("📡 Subscribe mode enabled - will watch for new versions...")
+	fmt.Println("   Press Ctrl+C to stop watching...")
+
+	// Create a context that we can cancel on Ctrl+C
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Set up signal handling for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		fmt.Println("\n🛑 Shutting down subscription...")
+		cancel() // Cancel the context immediately
+
+		// Force close the remote client
+		remoteClient.Close()
+
+		// If we don't exit within 2 seconds, force exit
+		go func() {
+			time.Sleep(2 * time.Second)
+			fmt.Println("Force exiting...")
+			os.Exit(0)
+		}()
+	}()
+
+	syncCount := 0
+	for {
+		syncCount++
+		logger.Info("Starting sync iteration", zap.Int("syncCount", syncCount))
+
+		// Create a new local client for this sync iteration
+		localClient, err := bridge.New(&bridge.Config{
+			DatabasePath: localPath,
+			DryRun:       dryRun,
+			Logger:       logger.Named("local"),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create local client: %w", err)
+		}
+
+		// Perform the sync
+		err = performPullSync(localClient, remoteClient)
+		localClient.Close() // Close the local client after each sync
+
+		if err != nil {
+			return fmt.Errorf("pull synchronization failed on iteration %d: %w", syncCount, err)
+		}
+
+		// Save -sqlrsync file on first sync if needed
+		if syncCount == 1 && needsToBuildDashSQLRSyncFile(localPath, remotePath) {
+			token := remoteClient.GetNewPullKey()
+			dashSQLRsync := NewDashSQLRsync(localPath)
+			replicaID := remoteClient.GetReplicaID()
+			if err := dashSQLRsync.Write(remotePath, localPath, replicaID, token, serverURL); err != nil {
+				logger.Warn("Failed to create shareable config file", zap.Error(err))
+			}
+		}
+
+		logger.Info("Sync iteration completed successfully", zap.Int("syncCount", syncCount))
+		fmt.Printf("✅ Sync #%d completed. Waiting for new version...\n", syncCount)
+
+		// Reset the client state for the next sync
+		remoteClient.ResetForNewSync()
+
+		// Add a small delay to ensure the bridge has finished its read operations
+		time.Sleep(100 * time.Millisecond)
+
+		// Wait for new version notification or shutdown signal
+		logger.Info("Starting to wait for new version notification", zap.Int("syncCount", syncCount))
+		waitChan := make(chan error, 1)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Error("Panic in WaitForNewVersion", zap.Any("panic", r))
+					waitChan <- fmt.Errorf("panic in WaitForNewVersion: %v", r)
+				}
+			}()
+			logger.Debug("About to call WaitForNewVersion")
+			err := remoteClient.WaitForNewVersion()
+			logger.Debug("WaitForNewVersion returned", zap.Error(err))
+			waitChan <- err
+		}()
+
+		select {
+		case <-ctx.Done():
+			fmt.Println("Subscription stopped by user.")
+			return nil
+		case err := <-waitChan:
+			if err != nil {
+				// Check if this is a context cancellation (graceful shutdown)
+				if err.Error() == "client context cancelled" || ctx.Err() != nil {
+					fmt.Println("Subscription stopped by user.")
+					return nil
+				}
+				logger.Error("Error waiting for new version", zap.Error(err))
+				fmt.Printf("❌ Subscription error: %v\n", err)
+				return fmt.Errorf("subscription error: %w", err)
+			}
+			fmt.Println("🔄 New version detected! Starting sync...")
+		case <-time.After(5 * time.Second):
+			// Periodically check if we should exit
+			if ctx.Err() != nil {
+				fmt.Println("Subscription stopped by user.")
+				return nil
+			}
+			// Continue the wait loop
+			continue
+		}
+	}
 }
 
 func performPushSync(localClient *bridge.Client, remoteClient *remote.Client) error {
@@ -595,12 +725,13 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.Flags().StringVar(&pullKey, "pullKey", "", "Authentication key for pull operations")
-	rootCmd.Flags().StringVar(&pushKey, "pushKey", "", "Authentication key for push operations")
+	rootCmd.Flags().StringVar(&pullKey, "pullKey", "", "Authentication key for PULL operations")
+	rootCmd.Flags().StringVar(&pushKey, "pushKey", "", "Authentication key for PUSH operations")
 	rootCmd.Flags().StringVar(&replicaID, "replicaID", "", "Replica ID for the remote database (overwrites the REMOTE path)")
-	rootCmd.Flags().StringVarP(&serverURL, "server", "s", "wss://sqlrsync.com", "Server URL for push/pull operations")
+	rootCmd.Flags().StringVarP(&serverURL, "server", "s", "wss://sqlrsync.com", "Server URL for PUSH/PULL operations")
+	rootCmd.Flags().BoolVar(&subscribe, "subscribe", false, "Enable subscription to PULL changes from the remote database")
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging")
-	rootCmd.Flags().BoolVar(&setPublic, "public", false, "Enable public access to the replica (only for push operations)")
+	rootCmd.Flags().BoolVar(&setPublic, "public", false, "Enable public access to the replica (only for PUSH operations)")
 	rootCmd.Flags().BoolVar(&newReadToken, "storeNewReadToken", true, "After syncing, the server creates a new read-only token that is stored in the -sqlrsync file adjacent to the local database")
 	rootCmd.Flags().BoolVar(&dryRun, "dry", false, "Perform a dry run without making changes")
 	rootCmd.Flags().IntVarP(&timeout, "timeout", "t", 8000, "Connection timeout in milliseconds (Max 10 seconds)")
