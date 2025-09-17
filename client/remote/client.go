@@ -344,7 +344,18 @@ func (c *Client) Read(buffer []byte) (int, error) {
 		return 0, nil
 	}
 
-	// Check if we have a connection error first
+	// Check if connection is still alive first
+	if !c.isConnected() {
+		c.logger.Debug("Connection not active, returning immediately")
+		// If sync completed normally, return success
+		if c.isSyncCompleted() {
+			return 0, nil
+		}
+		// Otherwise return connection lost
+		return 0, fmt.Errorf("connection lost")
+	}
+
+	// Check if we have a connection error
 	if lastErr := c.GetLastError(); lastErr != nil {
 		// If sync is completed and this is a normal closure, return immediately
 		if c.isSyncCompleted() && websocket.IsCloseError(lastErr, websocket.CloseNoStatusReceived, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
@@ -727,14 +738,19 @@ func (c *Client) readLoop() {
 				c.setError(err)
 				c.setConnected(false)
 
-				// If sync is completed and this is a normal closure, close read queue immediately
-				if c.isSyncCompleted() && websocket.IsCloseError(err,
+				// If this is a normal closure, close read queue immediately
+				if websocket.IsCloseError(err,
 					websocket.CloseNoStatusReceived,
 					websocket.CloseNormalClosure,
 					websocket.CloseGoingAway) {
-					c.logger.Debug("Sync completed - closing read queue immediately")
+					c.logger.Debug("Normal closure - closing read queue immediately")
 					// Close the read queue to signal no more data
-					close(c.readQueue)
+					select {
+					case <-c.readQueue:
+						// Already closed
+					default:
+						close(c.readQueue)
+					}
 				}
 
 				// Only signal reconnection for truly unexpected errors (not normal closures)

@@ -1,0 +1,450 @@
+package sync
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+
+	"go.uber.org/zap"
+
+	"github.com/sqlrsync/sqlrsync.com/auth"
+	"github.com/sqlrsync/sqlrsync.com/bridge"
+	"github.com/sqlrsync/sqlrsync.com/remote"
+	"github.com/sqlrsync/sqlrsync.com/subscription"
+)
+
+// Operation represents a sync operation type
+type Operation int
+
+const (
+	OperationPull Operation = iota
+	OperationPush
+	OperationSubscribe
+)
+
+// Config holds sync coordinator configuration
+type Config struct {
+	ServerURL         string
+	ProvidedAuthToken string // Explicitly provided auth token
+	ProvidedPullKey   string // Explicitly provided pull key
+	ProvidedPushKey   string // Explicitly provided push key
+	ProvidedReplicaID string // Explicitly provided replica ID
+	LocalPath         string
+	RemotePath        string
+	Version           string
+	Operation         Operation
+	SetPublic         bool
+	DryRun            bool
+	Logger            *zap.Logger
+	Verbose           bool
+}
+
+// Coordinator manages sync operations and subscriptions
+type Coordinator struct {
+	config       *Config
+	logger       *zap.Logger
+	authResolver *auth.Resolver
+	subManager   *subscription.Manager
+	ctx          context.Context
+	cancel       context.CancelFunc
+}
+
+// NewCoordinator creates a new sync coordinator
+func NewCoordinator(config *Config) *Coordinator {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	return &Coordinator{
+		config:       config,
+		logger:       config.Logger,
+		authResolver: auth.NewResolver(config.Logger),
+		ctx:          ctx,
+		cancel:       cancel,
+	}
+}
+
+// Execute runs the sync operation
+func (c *Coordinator) Execute() error {
+	// Set up signal handling for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		fmt.Println("\n🛑 Shutting down...")
+		c.cancel()
+		// Force exit after 2 seconds if graceful shutdown fails
+		go func() {
+			time.Sleep(2 * time.Second)
+			fmt.Println("Force exiting...")
+			os.Exit(0)
+		}()
+	}()
+
+	switch c.config.Operation {
+	case OperationPull:
+		return c.executePull(false)
+	case OperationPush:
+		return c.executePush()
+	case OperationSubscribe:
+		return c.executeSubscribe()
+	default:
+		return fmt.Errorf("unknown operation")
+	}
+}
+
+// resolveAuth resolves authentication for the given operation
+func (c *Coordinator) resolveAuth(operation string) (*auth.ResolveResult, error) {
+	req := &auth.ResolveRequest{
+		LocalPath:         c.config.LocalPath,
+		RemotePath:        c.config.RemotePath,
+		ServerURL:         c.config.ServerURL,
+		ProvidedPullKey:   c.config.ProvidedPullKey,
+		ProvidedPushKey:   c.config.ProvidedPushKey,
+		ProvidedReplicaID: c.config.ProvidedReplicaID,
+		Operation:         operation,
+		Logger:            c.logger,
+	}
+
+	// Try explicit auth token first
+	if c.config.ProvidedAuthToken != "" {
+		return &auth.ResolveResult{
+			AuthToken:  c.config.ProvidedAuthToken,
+			ReplicaID:  c.config.ProvidedReplicaID,
+			ServerURL:  c.config.ServerURL,
+			RemotePath: c.config.RemotePath,
+			LocalPath:  c.config.LocalPath,
+		}, nil
+	}
+
+	result, err := c.authResolver.Resolve(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// If prompting is needed for push operations
+	if result.ShouldPrompt && operation == "push" {
+		token, err := c.authResolver.PromptForAdminKey(c.config.ServerURL)
+		if err != nil {
+			return nil, err
+		}
+		result.AuthToken = token
+		result.ShouldPrompt = false
+	}
+
+	return result, nil
+}
+
+// executeSubscribe runs pull sync with subscription for new versions
+func (c *Coordinator) executeSubscribe() error {
+	fmt.Println("📡 Subscribe mode enabled - will watch for new versions...")
+	fmt.Println("   Press Ctrl+C to stop watching...")
+
+	// Resolve authentication for subscription
+	authResult, err := c.resolveAuth("subscribe")
+	if err != nil {
+		return fmt.Errorf("authentication failed: %w", err)
+	}
+
+	// Create subscription manager
+	c.subManager = subscription.NewManager(&subscription.Config{
+		ServerURL:   authResult.ServerURL,
+		ReplicaPath: authResult.RemotePath,
+		AuthToken:   authResult.AuthToken,
+		ReplicaID:   authResult.ReplicaID,
+		Logger:      c.logger.Named("subscription"),
+	})
+
+	c.logger.Info("Starting subscription service", zap.String("server", authResult.ServerURL))
+
+	// Connect to subscription service
+	if err := c.subManager.Connect(); err != nil {
+		return fmt.Errorf("failed to connect to subscription service2: %w", err)
+	}
+	defer c.subManager.Close()
+
+	syncCount := 0
+	for {
+		syncCount++
+		fmt.Printf("🔄 Starting sync #%d...\n", syncCount)
+
+		// Perform pull sync
+		if err := c.executePull(true); err != nil {
+			c.logger.Error("Sync failed", zap.Error(err), zap.Int("syncCount", syncCount))
+			return fmt.Errorf("sync #%d failed: %w", syncCount, err)
+		}
+
+		fmt.Printf("✅ Sync #%d completed. Waiting for new version...\n", syncCount)
+
+		// Wait for new version or shutdown
+		select {
+		case <-c.ctx.Done():
+			fmt.Println("Subscription stopped by user.")
+			return nil
+		default:
+		}
+
+		// Wait for new version notification
+		version, err := c.subManager.WaitForNewVersion()
+		if err != nil {
+			// Check if this is a cancellation (graceful shutdown)
+			if strings.Contains(err.Error(), "cancelled") {
+				fmt.Println("Subscription stopped by user.")
+				return nil
+			}
+			c.logger.Error("Subscription error", zap.Error(err))
+			return fmt.Errorf("subscription error: %w", err)
+		}
+
+		fmt.Printf("🔄 New version %s detected! Starting sync...\n", version)
+		// Update version for next sync
+		if version != "latest" {
+			c.config.Version = version
+		}
+	}
+}
+
+// executePull performs a single pull sync operation
+func (c *Coordinator) executePull(isSubscription bool) error {
+	// Resolve authentication
+	authResult, err := c.resolveAuth("pull")
+	if err != nil {
+		return fmt.Errorf("authentication failed: %w", err)
+	}
+
+	version := c.config.Version
+	if version == "" {
+		version = "latest"
+	}
+
+	// Use resolved values, with config overrides
+	serverURL := authResult.ServerURL
+	if c.config.ServerURL != "" {
+		serverURL = c.config.ServerURL
+	}
+
+	remotePath := authResult.RemotePath
+	if c.config.RemotePath != "" {
+		remotePath = c.config.RemotePath
+	}
+
+	if !isSubscription {
+		fmt.Printf("PULLing down from %s/%s@%s ...\n", serverURL, remotePath, version)
+	}
+
+	// Create remote client for WebSocket transport
+	remoteClient, err := remote.New(&remote.Config{
+		ServerURL:               serverURL + "/sapi/pull/" + remotePath,
+		AuthToken:               authResult.AuthToken,
+		ReplicaID:               authResult.ReplicaID,
+		Timeout:                 8000,
+		PingPong:                false, // No ping/pong needed for single sync
+		Logger:                  c.logger.Named("remote"),
+		Subscribe:               false, // Subscription handled separately
+		EnableTrafficInspection: c.config.Verbose,
+		InspectionDepth:         5,
+		Version:                 version,
+		SendConfigCmd:           c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create remote client: %w", err)
+	}
+	defer remoteClient.Close()
+
+	// Connect to remote server
+	if err := remoteClient.Connect(); err != nil {
+		return fmt.Errorf("failed to connect to server: %w", err)
+	}
+
+	// Create local client for SQLite operations
+	localClient, err := bridge.New(&bridge.Config{
+		DatabasePath: c.config.LocalPath,
+		DryRun:       c.config.DryRun,
+		Logger:       c.logger.Named("local"),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create local client: %w", err)
+	}
+	defer localClient.Close()
+
+	// Perform the sync
+	if err := c.performPullSync(localClient, remoteClient); err != nil {
+		return fmt.Errorf("pull synchronization failed: %w", err)
+	}
+
+	// Save pull result if needed
+	if remoteClient.GetNewPullKey() != "" && c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath) {
+		if err := c.authResolver.SavePullResult(
+			c.config.LocalPath,
+			serverURL,
+			remoteClient.GetReplicaPath(),
+			remoteClient.GetReplicaID(),
+			remoteClient.GetNewPullKey(),
+		); err != nil {
+			c.logger.Warn("Failed to save pull result", zap.Error(err))
+		} else {
+			fmt.Println("🔑 Shareable config file created for future pulls")
+		}
+	}
+
+	if !isSubscription {
+		c.logger.Info("Pull synchronization completed successfully")
+	}
+	return nil
+}
+
+// executePush performs a push sync operation
+func (c *Coordinator) executePush() error {
+	// Validate that database file exists
+	if _, err := os.Stat(c.config.LocalPath); os.IsNotExist(err) {
+		return fmt.Errorf("database file does not exist: %s", c.config.LocalPath)
+	}
+
+	// Resolve authentication
+	authResult, err := c.resolveAuth("push")
+	if err != nil {
+		return fmt.Errorf("authentication failed: %w", err)
+	}
+
+	// Use resolved values, with config overrides
+	serverURL := authResult.ServerURL
+	if c.config.ServerURL != "" {
+		serverURL = c.config.ServerURL
+	}
+
+	remotePath := authResult.RemotePath
+	if c.config.RemotePath != "" {
+		remotePath = c.config.RemotePath
+	}
+
+	fmt.Printf("PUSHing up to %s/%s ...\n", serverURL, remotePath)
+
+	// Create local client for SQLite operations
+	localClient, err := bridge.New(&bridge.Config{
+		DatabasePath: c.config.LocalPath,
+		DryRun:       c.config.DryRun,
+		Logger:       c.logger.Named("local"),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create local client: %w", err)
+	}
+	defer localClient.Close()
+
+	// Get absolute path for the local database
+	absLocalPath, err := filepath.Abs(c.config.LocalPath)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path: %w", err)
+	}
+
+	localHostname, _ := os.Hostname()
+
+	// Create remote client for WebSocket transport
+	remoteClient, err := remote.New(&remote.Config{
+		ServerURL:               serverURL + "/sapi/push/" + remotePath,
+		PingPong:                false,
+		Timeout:                 8000,
+		AuthToken:               authResult.AuthToken,
+		Logger:                  c.logger.Named("remote"),
+		EnableTrafficInspection: c.config.Verbose,
+		LocalHostname:           localHostname,
+		LocalAbsolutePath:       absLocalPath,
+		InspectionDepth:         5,
+		SendConfigCmd:           c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath),
+		SetPublic:               c.config.SetPublic,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create remote client: %w", err)
+	}
+	defer remoteClient.Close()
+
+	// Connect to remote server
+	if err := remoteClient.Connect(); err != nil {
+		return fmt.Errorf("failed to connect to server: %w", err)
+	}
+
+	// Perform the sync
+	if err := c.performPushSync(localClient, remoteClient); err != nil {
+		return fmt.Errorf("push synchronization failed: %w", err)
+	}
+
+	// Save push result if we got new keys
+	if remoteClient.GetNewPushKey() != "" {
+		if err := c.authResolver.SavePushResult(
+			absLocalPath,
+			serverURL,
+			remoteClient.GetReplicaPath(),
+			remoteClient.GetReplicaID(),
+			remoteClient.GetNewPushKey(),
+		); err != nil {
+			c.logger.Warn("Failed to save push result", zap.Error(err))
+		} else {
+			fmt.Println("🔑 This database is now PUSH-enabled on this system")
+			fmt.Println("   Push credentials stored securely for future use")
+		}
+	}
+
+	// Create -sqlrsync file for sharing if needed
+	if c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath) && remoteClient.GetNewPullKey() != "" {
+		if err := c.authResolver.SavePullResult(
+			c.config.LocalPath,
+			serverURL,
+			remoteClient.GetReplicaPath(),
+			remoteClient.GetReplicaID(),
+			remoteClient.GetNewPullKey(),
+		); err != nil {
+			c.logger.Warn("Failed to create shareable config file", zap.Error(err))
+		} else {
+			fmt.Println("🔑 Shareable config file created for pull access")
+		}
+	}
+
+	if c.config.SetPublic {
+		fmt.Printf("🌐 This replica is now publicly accessible at sqlrsync.com/%s\n", remoteClient.GetReplicaPath())
+	}
+
+	c.logger.Info("Push synchronization completed successfully")
+	return nil
+}
+
+// performPullSync executes the pull synchronization
+func (c *Coordinator) performPullSync(localClient *bridge.Client, remoteClient *remote.Client) error {
+	// Create I/O bridge between remote and local clients
+	readFunc := func(buffer []byte) (int, error) {
+		return remoteClient.Read(buffer)
+	}
+
+	writeFunc := func(data []byte) error {
+		return remoteClient.Write(data)
+	}
+
+	// Run the replica sync through the bridge
+	return localClient.RunPullSync(readFunc, writeFunc)
+}
+
+// performPushSync executes the push synchronization
+func (c *Coordinator) performPushSync(localClient *bridge.Client, remoteClient *remote.Client) error {
+	// Create I/O bridge between local and remote clients
+	readFunc := func(buffer []byte) (int, error) {
+		return remoteClient.Read(buffer)
+	}
+
+	writeFunc := func(data []byte) error {
+		return remoteClient.Write(data)
+	}
+
+	// Run the origin sync through the bridge
+	return localClient.RunPushSync(readFunc, writeFunc)
+}
+
+// Close cleanly shuts down the coordinator
+func (c *Coordinator) Close() error {
+	c.cancel()
+	if c.subManager != nil {
+		return c.subManager.Close()
+	}
+	return nil
+}
