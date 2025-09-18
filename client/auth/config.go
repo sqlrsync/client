@@ -186,9 +186,31 @@ func SaveLocalSecretsConfig(config *LocalSecretsConfig) error {
 
 // FindDatabaseByPath finds a database configuration by local path
 func (c *LocalSecretsConfig) FindDatabaseByPath(path string) *SQLRsyncDatabase {
+	// Normalize the search path to absolute path
+	searchPath, err := filepath.Abs(path)
+	if err != nil {
+		// If we can't get absolute path, fall back to original comparison
+		for i := range c.SQLRsyncDatabases {
+			if c.SQLRsyncDatabases[i].LocalPath == path {
+				return &c.SQLRsyncDatabases[i]
+			}
+		}
+		return nil
+	}
+
 	for i := range c.SQLRsyncDatabases {
-		if c.SQLRsyncDatabases[i].LocalPath == path {
-			return &c.SQLRsyncDatabases[i]
+		// Normalize the stored path to absolute path for comparison
+		storedPath, err := filepath.Abs(c.SQLRsyncDatabases[i].LocalPath)
+		if err != nil {
+			// If we can't normalize stored path, compare as-is
+			if c.SQLRsyncDatabases[i].LocalPath == path || c.SQLRsyncDatabases[i].LocalPath == searchPath {
+				return &c.SQLRsyncDatabases[i]
+			}
+		} else {
+			// Compare normalized absolute paths
+			if storedPath == searchPath {
+				return &c.SQLRsyncDatabases[i]
+			}
 		}
 	}
 	return nil

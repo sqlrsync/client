@@ -83,9 +83,21 @@ func (r *Resolver) Resolve(req *ResolveRequest) (*ResolveResult, error) {
 			return nil, fmt.Errorf("failed to get absolute path: %w", err)
 		}
 
+		// If no server was explicitly provided (still default), try to get server from local config
+		if req.ServerURL == "wss://sqlrsync.com" {
+			if localSecretsConfig, err := LoadLocalSecretsConfig(); err == nil {
+				if dbConfig := localSecretsConfig.FindDatabaseByPath(absLocalPath); dbConfig != nil {
+					r.logger.Debug("Using server URL from local secrets config", 
+						zap.String("configuredServer", dbConfig.Server),
+						zap.String("defaultServer", req.ServerURL))
+					result.ServerURL = dbConfig.Server
+				}
+			}
+		}
+
 		// Check local secrets config for push operations
 		if req.Operation == "push" {
-			if authResult, err := r.resolveFromLocalSecrets(absLocalPath, req.ServerURL, result); err == nil {
+			if authResult, err := r.resolveFromLocalSecrets(absLocalPath, result.ServerURL, result); err == nil {
 				return authResult, nil
 			}
 		}
@@ -118,21 +130,34 @@ func (r *Resolver) Resolve(req *ResolveRequest) (*ResolveResult, error) {
 
 // resolveFromLocalSecrets attempts to resolve auth from local-secrets.toml
 func (r *Resolver) resolveFromLocalSecrets(absLocalPath, serverURL string, result *ResolveResult) (*ResolveResult, error) {
+	r.logger.Debug("Attempting to resolve from local secrets", zap.String("absLocalPath", absLocalPath), zap.String("serverURL", serverURL))
+	
 	localSecretsConfig, err := LoadLocalSecretsConfig()
 	if err != nil {
+		r.logger.Debug("Failed to load local secrets config", zap.Error(err))
 		return nil, fmt.Errorf("failed to load local secrets config: %w", err)
+	}
+
+	r.logger.Debug("Loaded local secrets config", zap.Int("databaseCount", len(localSecretsConfig.SQLRsyncDatabases)))
+	for i, db := range localSecretsConfig.SQLRsyncDatabases {
+		r.logger.Debug("Checking database config", zap.Int("index", i), zap.String("storedPath", db.LocalPath), zap.String("server", db.Server))
 	}
 
 	dbConfig := localSecretsConfig.FindDatabaseByPath(absLocalPath)
 	if dbConfig == nil {
+		r.logger.Debug("No database configuration found", zap.String("searchPath", absLocalPath))
 		return nil, fmt.Errorf("no database configuration found for path: %s", absLocalPath)
 	}
 
 	if dbConfig.PushKey == "" {
+		r.logger.Debug("No push key found for database", zap.String("path", absLocalPath))
 		return nil, fmt.Errorf("no push key found for database")
 	}
 
 	if dbConfig.Server != serverURL {
+		r.logger.Debug("Server URL mismatch", 
+			zap.String("configured", dbConfig.Server), 
+			zap.String("requested", serverURL))
 		return nil, fmt.Errorf("server URL mismatch: configured=%s, requested=%s", dbConfig.Server, serverURL)
 	}
 

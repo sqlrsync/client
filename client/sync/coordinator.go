@@ -75,7 +75,7 @@ func (c *Coordinator) Execute() error {
 
 	go func() {
 		<-sigChan
-		fmt.Println("\n🛑 Shutting down...")
+		fmt.Println("\nShutting down...")
 		c.cancel()
 		// Force exit after 2 seconds if graceful shutdown fails
 		go func() {
@@ -223,7 +223,8 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 
 	// Use resolved values, with config overrides
 	serverURL := authResult.ServerURL
-	if c.config.ServerURL != "" {
+	// Only override if user explicitly provided a different server (not just using the default)
+	if c.config.ServerURL != "" && c.config.ServerURL != "wss://sqlrsync.com" {
 		serverURL = c.config.ServerURL
 	}
 
@@ -312,7 +313,8 @@ func (c *Coordinator) executePush() error {
 
 	// Use resolved values, with config overrides
 	serverURL := authResult.ServerURL
-	if c.config.ServerURL != "" {
+	// Only override if user explicitly provided a different server (not just using the default)
+	if c.config.ServerURL != "" && c.config.ServerURL != "wss://sqlrsync.com" {
 		serverURL = c.config.ServerURL
 	}
 
@@ -421,6 +423,13 @@ func (c *Coordinator) performPullSync(localClient *bridge.Client, remoteClient *
 		return remoteClient.Write(data)
 	}
 
+
+	progress := remoteClient.GetProgress()
+	if progress != nil {
+		fmt.Printf("Current progress: %.1f%% (%d/%d pages)\n",
+			progress.PercentComplete, progress.PagesSent, progress.TotalPages)
+	}
+
 	// Run the replica sync through the bridge
 	return localClient.RunPullSync(readFunc, writeFunc)
 }
@@ -434,6 +443,12 @@ func (c *Coordinator) performPushSync(localClient *bridge.Client, remoteClient *
 
 	writeFunc := func(data []byte) error {
 		return remoteClient.Write(data)
+	}
+
+	progress := remoteClient.GetProgress()
+	if progress != nil {
+		fmt.Printf("Current progress: %.1f%% (%d/%d pages)\n",
+			progress.PercentComplete, progress.PagesSent, progress.TotalPages)
 	}
 
 	// Run the origin sync through the bridge
