@@ -714,7 +714,7 @@ func (c *Client) readLoop() {
 			}
 
 			// Set read deadline - much longer timeout in subscribe mode for hibernated connections
-			timeout := 9 * time.Second
+			timeout := 15 * time.Second
 			if c.config.Subscribe {
 				// In subscribe mode, use very long timeout (1 hour) to allow for hibernated connections
 				timeout = 1 * time.Hour
