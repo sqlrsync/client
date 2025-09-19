@@ -316,7 +316,8 @@ func (d *DashSQLRsync) Write(remotePath string, localName string, replicaID stri
 
 	content := fmt.Sprintf(`#!/bin/bash
 # https://sqlrsync.com/help/dash-sqlrsync
-sqlrsync %s %s --replicaID=%s --pullKey=%s --server=%s
+sqlrsync %s %s --replicaID=%s --pullKey=%s --server=%s "$@"
+
 `, remotePath, localName, replicaID, pullKey, serverURL)
 
 	if err := os.WriteFile(d.FilePath(), []byte(content), 0755); err != nil {

@@ -803,9 +803,9 @@ func (c *Client) Read(buffer []byte) (int, error) {
 		if c.config.Subscribe {
 			return 1 * time.Hour
 		}
-		// Use a much shorter timeout if sync is completed (non-subscribe mode)
+		// Use a longer timeout if sync is completed to allow final transaction processing
 		if c.isSyncCompleted() {
-			return 100 * time.Millisecond
+			return 2 * time.Second
 		}
 		return 9 * time.Second
 	}()):
@@ -917,13 +917,35 @@ func (c *Client) Close() {
 	// Cancel context to signal all goroutines to stop
 	c.cancel()
 
-	// Close the WebSocket connection
+	// Close the WebSocket connection gracefully
 	c.mu.Lock()
 	if c.conn != nil {
 		// Send close message
-		c.conn.WriteControl(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
-			time.Now().Add(5*time.Second))
+		closeMessage := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")
+		err := c.conn.WriteControl(websocket.CloseMessage, closeMessage, time.Now().Add(5*time.Second))
+		if err != nil {
+			c.logger.Debug("Error sending close message", zap.Error(err))
+		} else {
+			c.logger.Debug("Sent WebSocket close message")
+		}
+		
+		// Set a read deadline for the close handshake
+		c.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		
+		// Wait for server's close response by reading until we get a close frame
+		for {
+			_, _, err := c.conn.ReadMessage()
+			if err != nil {
+				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseNoStatusReceived) {
+					c.logger.Debug("Received close acknowledgment from server")
+				} else {
+					c.logger.Debug("Connection closed during close handshake", zap.Error(err))
+				}
+				break
+			}
+			// Keep reading until we get the close frame or timeout
+		}
+		
 		c.conn.Close()
 		c.conn = nil
 	}
@@ -1157,6 +1179,9 @@ func (c *Client) readLoop() {
 					websocket.CloseNormalClosure,    // 1000 - normal closure
 					websocket.CloseGoingAway) {      // 1001 - endpoint going away
 					c.logger.Info("WebSocket connection closed normally", zap.Error(err))
+				} else if strings.Contains(err.Error(), "use of closed network connection") {
+					// This happens when we close the connection during shutdown - it's expected
+					c.logger.Debug("Connection closed during shutdown", zap.Error(err))
 				} else {
 					// Any other error is unexpected
 					c.logger.Error("WebSocket read error", zap.Error(err))
@@ -1233,7 +1258,8 @@ func (c *Client) readLoop() {
 			msgType := c.inspector.parseMessageType(data)
 			if msgType == "ORIGIN_END" {
 				c.logger.Info("ORIGIN_END detected in read loop - sync will complete")
-				c.setSyncCompleted(true)
+				// Don't mark as completed yet - let the C code process all remaining data first
+				// The Read method will mark it as completed when it actually receives ORIGIN_END
 			} else if msgType == "SQLRSYNC_NEWREPLICAVERSION" && c.config.Subscribe {
 				// Handle new version notification in subscribe mode
 				c.logger.Info("SQLRSYNC_NEWREPLICAVERSION (0x52) received - new version available!")
