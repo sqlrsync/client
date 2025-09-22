@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	SQLRSYNC_CONFIG          = 0x51 // Send to keys and replicaID
+	SQLRSYNC_CONFIG            = 0x51 // Send to keys and replicaID
 	SQLRSYNC_NEWREPLICAVERSION = 0x52 // New version available
 )
 
@@ -35,8 +35,8 @@ type SyncDirection int
 
 const (
 	DirectionUnknown SyncDirection = iota
-	DirectionPush    // Local → Remote (ORIGIN_* messages outbound)
-	DirectionPull    // Remote → Local (REPLICA_* messages inbound)
+	DirectionPush                  // Local → Remote (ORIGIN_* messages outbound)
+	DirectionPull                  // Remote → Local (REPLICA_* messages inbound)
 )
 
 // ProgressEventType represents different types of progress events
@@ -55,24 +55,24 @@ const (
 // SyncProgress tracks the current state of a sync operation
 type SyncProgress struct {
 	// Basic metrics
-	TotalPages       int
-	PageSize         int
-	TotalBytes       int64
-	
+	TotalPages int
+	PageSize   int
+	TotalBytes int64
+
 	// Progress counters
-	PagesSent        int  // ORIGIN_PAGE count
-	PagesReceived    int  // REPLICA_PAGE count  
-	PagesConfirmed   int  // REPLICA_HASH/ORIGIN_HASH count
+	PagesSent        int // ORIGIN_PAGE count
+	PagesReceived    int // REPLICA_PAGE count
+	PagesConfirmed   int // REPLICA_HASH/ORIGIN_HASH count
 	BytesTransferred int64
-	
+
 	// Timing
-	StartTime        time.Time
-	LastUpdate       time.Time
-	
+	StartTime  time.Time
+	LastUpdate time.Time
+
 	// State
-	Phase           ProgressPhase
-	Direction       SyncDirection
-	
+	Phase     ProgressPhase
+	Direction SyncDirection
+
 	// Calculated fields
 	PercentComplete float64
 	EstimatedETA    time.Duration
@@ -91,19 +91,19 @@ type SyncProgressEvent struct {
 type ProgressFormat int
 
 const (
-	FormatSimple ProgressFormat = iota // Just percentage
-	FormatDetailed                     // Full progress bar with details
-	FormatJSON                         // Machine-readable JSON
+	FormatSimple   ProgressFormat = iota // Just percentage
+	FormatDetailed                       // Full progress bar with details
+	FormatJSON                           // Machine-readable JSON
 )
 
 // ProgressConfig configures progress reporting behavior
 type ProgressConfig struct {
-	Enabled      bool
-	Format       ProgressFormat
-	UpdateRate   time.Duration // Minimum time between updates
-	ShowETA      bool
-	ShowBytes    bool
-	ShowPages    bool
+	Enabled        bool
+	Format         ProgressFormat
+	UpdateRate     time.Duration // Minimum time between updates
+	ShowETA        bool
+	ShowBytes      bool
+	ShowPages      bool
 	PagesPerUpdate int // Update every N pages (default: 10)
 }
 
@@ -200,7 +200,7 @@ func (t *TrafficInspector) InspectForProgress(data []byte, direction string, cal
 	}
 
 	msgType := t.parseMessageType(data)
-	
+
 	// Log the message if enabled
 	if enableLogging {
 		inspectionSize := t.depth
@@ -208,7 +208,7 @@ func (t *TrafficInspector) InspectForProgress(data []byte, direction string, cal
 			inspectionSize = len(data)
 		}
 		header := data[:inspectionSize]
-		
+
 		t.logger.Debug(fmt.Sprintf("Progress inspection %s", direction),
 			zap.String("messageType", msgType),
 			zap.Int("totalBytes", len(data)),
@@ -266,16 +266,37 @@ func (t *TrafficInspector) parseBeginMessage(data []byte, direction SyncDirectio
 		return nil
 	}
 
+	// Log the raw message bytes for debugging
+	minLen := len(data)
+	if minLen > 16 {
+		minLen = 16
+	}
+	t.logger.Info("Parsing BEGIN message",
+		zap.String("direction", func() string {
+			if direction == DirectionPush {
+				return "PUSH"
+			}
+			return "PULL"
+		}()),
+		zap.Int("messageLength", len(data)),
+		zap.String("rawBytes", fmt.Sprintf("%x", data[:minLen])))
+
 	// SQLite rsync protocol structure for BEGIN messages (simplified parsing)
 	// This is a best-effort parse - exact structure may vary
 	// Byte 0: Message type (0x41 for ORIGIN_BEGIN, 0x61 for REPLICA_BEGIN)
 	// Bytes 1-4: Total pages (little-endian uint32)
 	// Bytes 5-8: Page size (little-endian uint32)
-	
+
 	totalPages := int(data[1]) | int(data[2])<<8 | int(data[3])<<16 | int(data[4])<<24
 	pageSize := int(data[5]) | int(data[6])<<8 | int(data[7])<<16 | int(data[8])<<24
-	
-	// Sanity check the parsed values
+
+	t.logger.Info("Parsed values from BEGIN message",
+		zap.Int("totalPages", totalPages),
+		zap.Int("pageSize", pageSize),
+		zap.String("bytes1-4", fmt.Sprintf("%02x %02x %02x %02x", data[1], data[2], data[3], data[4])),
+		zap.String("bytes5-8", fmt.Sprintf("%02x %02x %02x %02x", data[5], data[6], data[7], data[8])))
+
+	// Sanity check the parsed values - allow smaller page sizes like 4096
 	if totalPages <= 0 || totalPages > 1000000 || pageSize <= 0 || pageSize > 65536 {
 		t.logger.Warn("Parsed BEGIN message with suspicious values",
 			zap.Int("totalPages", totalPages),
@@ -287,10 +308,10 @@ func (t *TrafficInspector) parseBeginMessage(data []byte, direction SyncDirectio
 		TotalPages:      totalPages,
 		PageSize:        pageSize,
 		TotalBytes:      int64(totalPages) * int64(pageSize),
-		Phase:          PhaseInitializing,
-		Direction:      direction,
-		StartTime:      time.Now(),
-		LastUpdate:     time.Now(),
+		Phase:           PhaseInitializing,
+		Direction:       direction,
+		StartTime:       time.Now(),
+		LastUpdate:      time.Now(),
 		PercentComplete: 0.0,
 	}
 
@@ -378,7 +399,7 @@ type Config struct {
 	SendConfigCmd           bool // the -sqlrsync file doesn't exist, so make a token
 	LocalHostname           string
 	LocalAbsolutePath       string
-	
+
 	// Progress tracking
 	ProgressConfig   *ProgressConfig
 	ProgressCallback ProgressCallback
@@ -423,7 +444,7 @@ type Client struct {
 	ReplicaPath    string
 	SetPublic      bool
 	newVersionChan chan struct{}
-	
+
 	// Progress tracking
 	progress         *SyncProgress
 	progressMu       sync.RWMutex
@@ -482,15 +503,15 @@ func New(config *Config) (*Client, error) {
 func (c *Client) initProgress(totalPages, pageSize int, direction SyncDirection) {
 	c.progressMu.Lock()
 	defer c.progressMu.Unlock()
-	
+
 	c.progress = &SyncProgress{
 		TotalPages:      totalPages,
 		PageSize:        pageSize,
 		TotalBytes:      int64(totalPages) * int64(pageSize),
-		Phase:          PhaseInitializing,
-		Direction:      direction,
-		StartTime:      time.Now(),
-		LastUpdate:     time.Now(),
+		Phase:           PhaseInitializing,
+		Direction:       direction,
+		StartTime:       time.Now(),
+		LastUpdate:      time.Now(),
 		PercentComplete: 0.0,
 	}
 	c.lastProgressSent = time.Now()
@@ -568,7 +589,7 @@ func (c *Client) calculateProgressMetrics() {
 	elapsed := time.Since(c.progress.StartTime)
 	if elapsed > 0 {
 		c.progress.PagesPerSecond = float64(completedPages) / elapsed.Seconds()
-		
+
 		if c.progress.PagesPerSecond > 0 {
 			remainingPages := c.progress.TotalPages - completedPages
 			c.progress.EstimatedETA = time.Duration(float64(remainingPages)/c.progress.PagesPerSecond) * time.Second
@@ -623,11 +644,11 @@ func (c *Client) sendProgressUpdate(eventType ProgressEventType, message string)
 func (c *Client) GetProgress() *SyncProgress {
 	c.progressMu.RLock()
 	defer c.progressMu.RUnlock()
-	
+
 	if c.progress == nil {
 		return nil
 	}
-	
+
 	progressCopy := *c.progress
 	return &progressCopy
 }
@@ -670,7 +691,6 @@ func (c *Client) Connect() error {
 	if c.config.ReplicaID != "" {
 		headers.Set("X-ReplicaID", c.config.ReplicaID)
 	}
-
 	if c.config.SetPublic {
 		headers.Set("X-SetPublic", fmt.Sprintf("%t", c.config.SetPublic))
 	}
@@ -807,7 +827,7 @@ func (c *Client) Read(buffer []byte) (int, error) {
 		if c.isSyncCompleted() {
 			return 2 * time.Second
 		}
-		return 9 * time.Second
+		return 30 * time.Second
 	}()):
 		// Check if connection is still alive
 		if !c.isConnected() {
@@ -838,7 +858,6 @@ func (c *Client) isSyncCompleted() bool {
 	defer c.syncMu.RUnlock()
 	return c.syncCompleted && !c.config.Subscribe
 }
-
 
 // handleOutboundTraffic inspects outbound data and handles sync completion detection
 func (c *Client) handleOutboundTraffic(data []byte) {
@@ -928,10 +947,10 @@ func (c *Client) Close() {
 		} else {
 			c.logger.Debug("Sent WebSocket close message")
 		}
-		
+
 		// Set a read deadline for the close handshake
 		c.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-		
+
 		// Wait for server's close response by reading until we get a close frame
 		for {
 			_, _, err := c.conn.ReadMessage()
@@ -945,7 +964,7 @@ func (c *Client) Close() {
 			}
 			// Keep reading until we get the close frame or timeout
 		}
-		
+
 		c.conn.Close()
 		c.conn = nil
 	}
@@ -1042,7 +1061,7 @@ func (c *Client) pingLoop() {
 	defer c.logger.Debug("Ping loop terminated")
 
 	// Use longer ping interval in subscribe mode to accommodate hibernated connections
-	pingInterval := 1 * time.Minute
+	pingInterval := 5 * time.Second
 	if c.config.Subscribe {
 		pingInterval = 25 * time.Minute
 		c.logger.Info("Subscribe mode: using 25-minute ping interval for hibernated connections")
@@ -1080,7 +1099,7 @@ func (c *Client) pingLoop() {
 				pingTimeout = 30 * time.Second
 			}
 
-			err := conn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(pingTimeout))
+			err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(pingTimeout))
 			if err != nil {
 				c.logger.Error("Failed to send ping", zap.Error(err))
 				c.setError(err)
@@ -1162,7 +1181,7 @@ func (c *Client) readLoop() {
 			}
 
 			// Set read deadline - much longer timeout in subscribe mode for hibernated connections
-			timeout := 15 * time.Second
+			timeout := 30 * time.Second
 			if c.config.Subscribe {
 				// In subscribe mode, use very long timeout (1 hour) to allow for hibernated connections
 				timeout = 1 * time.Hour
