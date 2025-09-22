@@ -246,7 +246,7 @@ func (m *Manager) readLoop() {
 // handleMessage processes incoming subscription messages
 func (m *Manager) handleMessage(msg Message) {
 	// Only log debug for non-PONG messages
-	if msg.Type != MsgTypePong {
+	if false && msg.Type != MsgTypePong {
 		m.logger.Debug("Received message", zap.String("type", msg.Type))
 	}
 
