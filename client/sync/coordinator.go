@@ -250,6 +250,17 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 		InspectionDepth:         5,
 		Version:                 version,
 		SendConfigCmd:           c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath),
+		//ProgressCallback:        remote.DefaultProgressCallback(remote.FormatSimple),
+		ProgressCallback: nil,
+		ProgressConfig: &remote.ProgressConfig{
+			Enabled:        true,
+			Format:         remote.FormatSimple,
+			UpdateRate:     500 * time.Millisecond,
+			ShowETA:        true,
+			ShowBytes:      true,
+			ShowPages:      true,
+			PagesPerUpdate: 10,
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create remote client: %w", err)
@@ -347,8 +358,8 @@ func (c *Coordinator) executePush() error {
 	// Create remote client for WebSocket transport
 	remoteClient, err := remote.New(&remote.Config{
 		ServerURL:               serverURL + "/sapi/push/" + remotePath,
-		PingPong:                false,
-		Timeout:                 8000,
+		PingPong:                true,
+		Timeout:                 15000,
 		AuthToken:               authResult.AuthToken,
 		Logger:                  c.logger.Named("remote"),
 		EnableTrafficInspection: c.config.Verbose,
@@ -357,6 +368,16 @@ func (c *Coordinator) executePush() error {
 		InspectionDepth:         5,
 		SendConfigCmd:           c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath),
 		SetPublic:               c.config.SetPublic,
+		ProgressCallback:        nil, //remote.DefaultProgressCallback(remote.FormatSimple),
+		ProgressConfig: &remote.ProgressConfig{
+			Enabled:        true,
+			Format:         remote.FormatSimple,
+			UpdateRate:     500 * time.Millisecond,
+			ShowETA:        true,
+			ShowBytes:      true,
+			ShowPages:      true,
+			PagesPerUpdate: 10,
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create remote client: %w", err)
@@ -423,12 +444,12 @@ func (c *Coordinator) performPullSync(localClient *bridge.Client, remoteClient *
 		return remoteClient.Write(data)
 	}
 
-
+/*
 	progress := remoteClient.GetProgress()
 	if progress != nil {
 		fmt.Printf("Current progress: %.1f%% (%d/%d pages)\n",
 			progress.PercentComplete, progress.PagesSent, progress.TotalPages)
-	}
+	}*/
 
 	// Run the replica sync through the bridge
 	return localClient.RunPullSync(readFunc, writeFunc)
@@ -444,12 +465,12 @@ func (c *Coordinator) performPushSync(localClient *bridge.Client, remoteClient *
 	writeFunc := func(data []byte) error {
 		return remoteClient.Write(data)
 	}
-
+/*
 	progress := remoteClient.GetProgress()
 	if progress != nil {
 		fmt.Printf("Current progress: %.1f%% (%d/%d pages)\n",
 			progress.PercentComplete, progress.PagesSent, progress.TotalPages)
-	}
+	}*/
 
 	// Run the origin sync through the bridge
 	return localClient.RunPushSync(readFunc, writeFunc)
