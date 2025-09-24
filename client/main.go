@@ -16,19 +16,19 @@ import (
 
 var VERSION = "0.0.1"
 var (
-	serverURL string
-	verbose   bool
-	dryRun    bool
-	SetPublic bool
+	serverURL   string
+	verbose     bool
+	dryRun      bool
+	SetPublic   bool
 	subscribing bool
-	pullKey   string
-	pushKey   string
-	replicaID string
-	logger    *zap.Logger
-	showVersion   bool
+	pullKey     string
+	pushKey     string
+	replicaID   string
+	logger      *zap.Logger
+	showVersion bool
 )
 
-var simpleRootCmd = &cobra.Command{
+var rootCmd = &cobra.Command{
 	Use:   "sqlrsync " + VERSION + " [ORIGIN] [REPLICA] or [LOCAL] or [REMOTE]",
 	Short: "SQLite Rsync - Simplified Version",
 	Long: `A web-enabled rsync-like utility for SQLite databases with subscription support.
@@ -45,17 +45,20 @@ Examples:
 `,
 	Version: VERSION,
 	PreRun: func(cmd *cobra.Command, args []string) {
-		setupSimpleLogger()
+		setupLogger()
 	},
-	RunE:          runSimpleSync,
+	RunE:          runSync,
 	SilenceErrors: true,
 	SilenceUsage:  true,
 }
 
-func runSimpleSync(cmd *cobra.Command, args []string) error {
+func runSync(cmd *cobra.Command, args []string) error {
 	if len(args) == 0 {
 		return cmd.Help()
 	}
+
+	// Preprocess variables
+	serverURL = strings.TrimRight(serverURL, "/")
 
 	// Determine operation based on arguments and flags
 	operation, localPath, remotePath, err := determineOperation(args)
@@ -66,7 +69,7 @@ func runSimpleSync(cmd *cobra.Command, args []string) error {
 	// Create sync coordinator
 	coordinator := sync.NewCoordinator(&sync.Config{
 		ServerURL:         serverURL,
-		ProvidedAuthToken: getSimpleAuthToken(),
+		ProvidedAuthToken: getAuthToken(),
 		ProvidedPullKey:   pullKey,
 		ProvidedPushKey:   pushKey,
 		ProvidedReplicaID: replicaID,
@@ -121,7 +124,7 @@ func determineOperation(args []string) (sync.Operation, string, string, error) {
 			}
 			return sync.OperationPull, replica, origin, nil
 		} else if originLocal && replicaLocal {
-			return sync.Operation(0), "", "", fmt.Errorf("local to local sync not supported in simplified version")
+			return sync.Operation(0), "", "", fmt.Errorf("local to local sync not yet supported")
 		} else {
 			return sync.Operation(0), "", "", fmt.Errorf("remote to remote sync not supported")
 		}
@@ -130,7 +133,7 @@ func determineOperation(args []string) (sync.Operation, string, string, error) {
 	return sync.Operation(0), "", "", fmt.Errorf("invalid arguments")
 }
 
-func getSimpleAuthToken() string {
+func getAuthToken() string {
 	// Try environment variable first
 	if token := os.Getenv("SQLRSYNC_AUTH_TOKEN"); token != "" {
 		return token
@@ -149,7 +152,7 @@ func getSimpleAuthToken() string {
 	return ""
 }
 
-func setupSimpleLogger() {
+func setupLogger() {
 	config := zap.NewDevelopmentConfig()
 
 	// zapcore Levels: DebugLevel, InfoLevel, WarnLevel, ErrorLevel, DPanicLevel, PanicLevel, FatalLevel
@@ -170,24 +173,21 @@ func setupSimpleLogger() {
 	}
 }
 
-func ExecuteSimple() error {
-	return simpleRootCmd.Execute()
-}
-
 func init() {
-	simpleRootCmd.Flags().StringVar(&pullKey, "pullKey", "", "Authentication key for PULL operations")
-	simpleRootCmd.Flags().StringVar(&pushKey, "pushKey", "", "Authentication key for PUSH operations")
-	simpleRootCmd.Flags().StringVar(&replicaID, "replicaID", "", "Replica ID for the remote database")
-	simpleRootCmd.Flags().StringVarP(&serverURL, "server", "s", "wss://sqlrsync.com", "Server URL for operations")
-	simpleRootCmd.Flags().BoolVar(&subscribing, "subscribe", false, "Enable subscription to PULL changes")
-	simpleRootCmd.Flags().BoolVar(&verbose, "verbose", false, "Enable verbose logging")
-	simpleRootCmd.Flags().BoolVar(&SetPublic, "public", false, "Enable public access to the replica (PUSH only)")
-	simpleRootCmd.Flags().BoolVar(&dryRun, "dry", false, "Perform a dry run without making changes")
-	simpleRootCmd.Flags().BoolVarP(&showVersion, "version", "v", false, "Show version information")
+	rootCmd.Flags().StringVar(&pullKey, "pullKey", "", "Authentication key for PULL operations")
+	rootCmd.Flags().StringVar(&pushKey, "pushKey", "", "Authentication key for PUSH operations")
+	rootCmd.Flags().StringVar(&replicaID, "replicaID", "", "Replica ID for the remote database")
+	rootCmd.Flags().StringVarP(&serverURL, "server", "s", "wss://sqlrsync.com", "Server URL for operations")
+	rootCmd.Flags().BoolVar(&subscribing, "subscribe", false, "Enable subscription to PULL changes")
+	rootCmd.Flags().BoolVar(&verbose, "verbose", false, "Enable verbose logging")
+	rootCmd.Flags().BoolVar(&SetPublic, "public", false, "Enable public access to the replica (PUSH only)")
+	rootCmd.Flags().BoolVar(&dryRun, "dry", false, "Perform a dry run without making changes")
+	rootCmd.Flags().BoolVarP(&showVersion, "version", "v", false, "Show version information")
+
 }
 
 func main() {
-	if err := ExecuteSimple(); err != nil {
+	if err := rootCmd.Execute(); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
