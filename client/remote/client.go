@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 )
@@ -488,8 +489,8 @@ func New(config *Config) (*Client, error) {
 		logger:         config.Logger,
 		ctx:            ctx,
 		cancel:         cancel,
-		readQueue:      make(chan []byte, 8202),
-		writeQueue:     make(chan []byte, 100),
+		readQueue:      make(chan []byte, 3),
+		writeQueue:     make(chan []byte, 5),
 		reconnectChan:  make(chan struct{}, 1),
 		inspector:      NewTrafficInspector(config.Logger, inspectionDepth),
 		newVersionChan: make(chan struct{}, 1),
@@ -916,7 +917,7 @@ func (c *Client) Write(data []byte) error {
 	case c.writeQueue <- dataCopy:
 		c.logger.Debug("Data queued for writing", zap.Int("bytes", len(dataCopy)))
 		return nil
-	case <-time.After(10 * time.Second):
+	case <-time.After(30 * time.Second):
 		return fmt.Errorf("write queue timeout")
 	}
 }
@@ -1203,7 +1204,7 @@ func (c *Client) readLoop() {
 					c.logger.Debug("Connection closed during shutdown", zap.Error(err))
 				} else {
 					// Any other error is unexpected
-					c.logger.Error("WebSocket read error", zap.Error(err))
+					//c.logger.Error("WebSocket read error", zap.Error(err))
 				}
 				c.setError(err)
 				c.setConnected(false)
@@ -1243,10 +1244,18 @@ func (c *Client) readLoop() {
 				readPushKeyResp := "NEWPUSHKEY="
 				replicaIDResp := "REPLICAID="
 				replicaPathResp := "REPLICAPATH="
+				messageResp := "MESSAGE="
+				abortResp := "ABORT="
 				// Handle text messages for NEWPULLKEY, NEWPUSHKEY, REPLICAID
 				// Example: "NEWPULLKEY=xxxxxxxxxxxxxxxxxxxxxx"
 				strData := string(data)
-				if (len(data) >= len(readPullKeyResp)+accessKeyLength) && strings.HasPrefix(strData, readPullKeyResp) {
+
+				if len(data) >= len(abortResp) && strings.HasPrefix(strData, abortResp) {
+					color.Red("❌ Server aborted connection: %s", strData[len(abortResp):])
+					c.setConnected(false)
+					message := strData[len(abortResp):]
+					c.setError(fmt.Errorf("server aborted connection: %s", message))
+				} else if (len(data) >= len(readPullKeyResp)+accessKeyLength) && strings.HasPrefix(strData, readPullKeyResp) {
 					c.NewPullKey = strData[len(readPullKeyResp):]
 					c.logger.Debug("📥 Received new Pull Key:", zap.String("key", c.NewPullKey))
 				} else if (len(data) >= len(readPushKeyResp)+accessKeyLength) && strings.HasPrefix(strData, readPushKeyResp) {
@@ -1257,9 +1266,10 @@ func (c *Client) readLoop() {
 					c.ReplicaID = strData[len(replicaIDResp):]
 					c.logger.Debug("📥 Received Replica ID:", zap.String("id", c.ReplicaID))
 				} else if (len(data) >= len(replicaPathResp)) && strings.HasPrefix(strData, replicaPathResp) {
-
 					c.ReplicaPath = strData[len(replicaPathResp):]
 					c.logger.Debug("📥 Received new Replica Path:", zap.String("path", c.ReplicaPath))
+				} else if (len(data) >= len(messageResp)) && strings.HasPrefix(strData, messageResp) {
+					fmt.Println(strData[len(messageResp):])
 				}
 				continue
 			}
@@ -1298,15 +1308,12 @@ func (c *Client) readLoop() {
 					c.handleProgressEvent(event)
 				}, c.config.EnableTrafficInspection)
 			}
-
 			// Queue the data for reading
 			select {
 			case c.readQueue <- data:
 				c.logger.Debug("Data queued for reading", zap.Int("bytes", len(data)))
 			case <-c.ctx.Done():
 				return
-			default:
-				c.logger.Warn("Read queue full, dropping message", zap.Int("bytes", len(data)))
 			}
 		}
 	}
