@@ -150,13 +150,16 @@ func (c *Coordinator) executeSubscribe() error {
 		return fmt.Errorf("authentication failed: %w", err)
 	}
 
-	// Create subscription manager
+	// Create subscription manager with reconnection configuration
 	c.subManager = subscription.NewManager(&subscription.Config{
-		ServerURL:   authResult.ServerURL,
-		ReplicaPath: authResult.RemotePath,
-		AuthToken:   authResult.AuthToken,
-		ReplicaID:   authResult.ReplicaID,
-		Logger:      c.logger.Named("subscription"),
+		ServerURL:             authResult.ServerURL,
+		ReplicaPath:           authResult.RemotePath,
+		AuthToken:             authResult.AuthToken,
+		ReplicaID:             authResult.ReplicaID,
+		Logger:                c.logger.Named("subscription"),
+		MaxReconnectAttempts:  20,              // Infinite reconnect attempts
+		InitialReconnectDelay: 5 * time.Second, // Start with 5 seconds delay
+		MaxReconnectDelay:     5 * time.Minute, // Cap at 5 minutes
 	})
 
 	c.logger.Info("Starting subscription service", zap.String("server", authResult.ServerURL))
@@ -170,7 +173,7 @@ func (c *Coordinator) executeSubscribe() error {
 	syncCount := 0
 	for {
 		syncCount++
-		fmt.Printf("🔄 Starting sync #%d...\n", syncCount)
+		fmt.Printf("🔄 Starting sync...\n")
 
 		// Perform pull sync
 		if err := c.executePull(true); err != nil {
@@ -178,7 +181,7 @@ func (c *Coordinator) executeSubscribe() error {
 			return fmt.Errorf("sync #%d failed: %w", syncCount, err)
 		}
 
-		fmt.Printf("✅ Sync #%d completed. Waiting for new version...\n", syncCount)
+		fmt.Printf("✅ Sync complete. Waiting for new version...\n")
 
 		// Wait for new version or shutdown
 		select {
@@ -189,22 +192,40 @@ func (c *Coordinator) executeSubscribe() error {
 		}
 
 		// Wait for new version notification
-		version, err := c.subManager.WaitForNewVersion()
-		if err != nil {
-			// Check if this is a cancellation (graceful shutdown)
-			if strings.Contains(err.Error(), "cancelled") {
-				fmt.Println("Subscription stopped by user.")
-				return nil
+		var version string;
+		for {
+			version, err = c.subManager.WaitForNewVersionMsg()
+			if err != nil {
+				// Check if this is a cancellation (graceful shutdown)
+				if strings.Contains(err.Error(), "cancelled") {
+					fmt.Println("Subscription stopped by user.")
+					return nil
+				}
+
+				// Check if this is a permanent reconnection failure
+				if strings.Contains(err.Error(), "reconnection failed") {
+					fmt.Printf("❌ Failed to maintain connection to subscription service: %v\n", err)
+					fmt.Println("   Please check your network connection and try again later.")
+					return fmt.Errorf("subscription connection lost: %w", err)
+				}
+
+				c.logger.Error("Subscription error", zap.Error(err))
+				return fmt.Errorf("subscription error: %w", err)
 			}
-			c.logger.Error("Subscription error", zap.Error(err))
-			return fmt.Errorf("subscription error: %w", err)
+			if c.config.Version == version {
+				fmt.Printf("ℹ️ Already at version %s, waiting for next update...\n", version)
+				continue
+			} else {
+				break
+			}
 		}
 
-		fmt.Printf("🔄 New version %s detected! Starting sync...\n", version)
+		fmt.Printf("🔄 New version %s announced!\n", version)
 		// Update version for next sync
 		if version != "latest" {
 			c.config.Version = version
 		}
+
 	}
 }
 
@@ -444,12 +465,12 @@ func (c *Coordinator) performPullSync(localClient *bridge.Client, remoteClient *
 		return remoteClient.Write(data)
 	}
 
-/*
-	progress := remoteClient.GetProgress()
-	if progress != nil {
-		fmt.Printf("Current progress: %.1f%% (%d/%d pages)\n",
-			progress.PercentComplete, progress.PagesSent, progress.TotalPages)
-	}*/
+	/*
+		progress := remoteClient.GetProgress()
+		if progress != nil {
+			fmt.Printf("Current progress: %.1f%% (%d/%d pages)\n",
+				progress.PercentComplete, progress.PagesSent, progress.TotalPages)
+		}*/
 
 	// Run the replica sync through the bridge
 	return localClient.RunPullSync(readFunc, writeFunc)
@@ -465,12 +486,12 @@ func (c *Coordinator) performPushSync(localClient *bridge.Client, remoteClient *
 	writeFunc := func(data []byte) error {
 		return remoteClient.Write(data)
 	}
-/*
-	progress := remoteClient.GetProgress()
-	if progress != nil {
-		fmt.Printf("Current progress: %.1f%% (%d/%d pages)\n",
-			progress.PercentComplete, progress.PagesSent, progress.TotalPages)
-	}*/
+	/*
+		progress := remoteClient.GetProgress()
+		if progress != nil {
+			fmt.Printf("Current progress: %.1f%% (%d/%d pages)\n",
+				progress.PercentComplete, progress.PagesSent, progress.TotalPages)
+		}*/
 
 	// Run the origin sync through the bridge
 	return localClient.RunPushSync(readFunc, writeFunc)

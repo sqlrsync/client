@@ -153,7 +153,16 @@ func getAuthToken() string {
 }
 
 func setupLogger() {
-	config := zap.NewDevelopmentConfig()
+	//config := zap.NewDevelopmentConfig()
+	config := zap.Config{
+		Level:             zap.NewAtomicLevelAt(zap.InfoLevel),
+		Development:       false,
+		DisableStacktrace: true, // This disables stack traces
+		Encoding:          "console",
+		EncoderConfig:     zap.NewProductionEncoderConfig(),
+		OutputPaths:       []string{"stdout"},
+		ErrorOutputPaths:  []string{"stderr"},
+	}
 
 	// zapcore Levels: DebugLevel, InfoLevel, WarnLevel, ErrorLevel, DPanicLevel, PanicLevel, FatalLevel
 
