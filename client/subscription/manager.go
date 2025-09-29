@@ -341,8 +341,6 @@ func (m *Manager) sendMessage(msg Message) error {
 		}
 	}
 
-	fmt.Println("Sending message:", string(data))
-
 	conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	return conn.WriteMessage(websocket.TextMessage, data)
 }
@@ -489,7 +487,7 @@ func (m *Manager) handleMessage(msg Message) {
 
 // pingLoop sends periodic ping messages
 func (m *Manager) pingLoop() {
-	ticker := time.NewTicker(10 * time.Second) // 1 minute ping interval
+	ticker := time.NewTicker(5 * time.Minute) // 1 minute ping interval
 	defer ticker.Stop()
 
 	for {
@@ -507,7 +505,6 @@ func (m *Manager) pingLoop() {
 				return
 			}
 
-			fmt.Println("🔔 Sending ping to server to keep connection alive...")
 			if err := m.sendMessage(Message{
 				Type:      MsgTypePing,
 				Timestamp: time.Now(),
