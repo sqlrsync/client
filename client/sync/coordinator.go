@@ -426,8 +426,9 @@ func (c *Coordinator) executePush() error {
 		); err != nil {
 			c.logger.Warn("Failed to save push result", zap.Error(err))
 		} else {
-			fmt.Println("🔑 This database is now PUSH-enabled on this system")
-			fmt.Println("   Push credentials stored securely for future use")
+			fmt.Println("🔑 A new PUSH access key was stored at ~/.config/sqlrsync/ for ")
+			fmt.Println("   revokable permission to push updates in the future.  Just")
+			fmt.Println("   use `sqlrsync " + absLocalPath + "` to push again.")
 		}
 	}
 
@@ -442,7 +443,9 @@ func (c *Coordinator) executePush() error {
 		); err != nil {
 			c.logger.Warn("Failed to create shareable config file", zap.Error(err))
 		} else {
-			fmt.Println("🔑 Shareable config file created for pull access")
+			fmt.Println("🔑 A new PULL access key was created: " + c.config.LocalPath + "-sqlrsync")
+			fmt.Println("   Share this file to allow others to download or subscribe")
+			fmt.Println("   to this database.")
 		}
 	}
 
