@@ -213,7 +213,7 @@ func (c *Coordinator) executeSubscribe() error {
 				return fmt.Errorf("subscription error: %w", err)
 			}
 			if c.config.Version == version {
-				fmt.Printf("ℹ️ Already at version %s, waiting for next update...\n", version)
+				fmt.Printf("ℹ️  Already at version %s, waiting for next update...\n", version)
 				continue
 			} else {
 				break
@@ -270,7 +270,8 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 		EnableTrafficInspection: c.config.Verbose,
 		InspectionDepth:         5,
 		Version:                 version,
-		SendConfigCmd:           c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath),
+		SendConfigCmd:           true,
+		SendKeyRequest:        c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath),
 		//ProgressCallback:        remote.DefaultProgressCallback(remote.FormatSimple),
 		ProgressCallback: nil,
 		ProgressConfig: &remote.ProgressConfig{
@@ -308,7 +309,7 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 	if err := c.performPullSync(localClient, remoteClient); err != nil {
 		return fmt.Errorf("pull synchronization failed: %w", err)
 	}
-
+	c.config.Version = remoteClient.GetVersion()
 	// Save pull result if needed
 	if remoteClient.GetNewPullKey() != "" && c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath) {
 		if err := c.authResolver.SavePullResult(
@@ -323,7 +324,6 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 			fmt.Println("🔑 Shareable config file created for future pulls")
 		}
 	}
-
 	if !isSubscription {
 		c.logger.Info("Pull synchronization completed successfully")
 	}
@@ -387,7 +387,8 @@ func (c *Coordinator) executePush() error {
 		LocalHostname:           localHostname,
 		LocalAbsolutePath:       absLocalPath,
 		InspectionDepth:         5,
-		SendConfigCmd:           c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath),
+		SendKeyRequest:          c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath),
+		SendConfigCmd:           true,
 		SetPublic:               c.config.SetPublic,
 		ProgressCallback:        nil, //remote.DefaultProgressCallback(remote.FormatSimple),
 		ProgressConfig: &remote.ProgressConfig{
