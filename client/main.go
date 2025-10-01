@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -66,6 +67,18 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	versionRaw := strings.SplitN(remotePath, "@", 2)
+	version := "latest"
+	if len(versionRaw) == 2 {
+		version = strings.TrimPrefix(strings.ToLower(versionRaw[1]), "v")
+		remotePath = versionRaw[0]
+	}
+
+	versionCheck, _ := strconv.Atoi(version)
+	if strings.HasPrefix(version, "latest") && versionCheck <= 0 {
+		return fmt.Errorf("invalid version specified: %s (must be `latest`, `latest-<number>`, or  `<number>` where the number is greater than 0)", version)
+	}
+
 	// Create sync coordinator
 	coordinator := sync.NewCoordinator(&sync.Config{
 		ServerURL:         serverURL,
@@ -75,7 +88,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		ProvidedReplicaID: replicaID,
 		LocalPath:         localPath,
 		RemotePath:        remotePath,
-		Version:           "latest", // Could be extended to parse @version syntax
+		Version:           version, // Could be extended to parse @version syntax
 		Operation:         operation,
 		SetPublic:         SetPublic,
 		DryRun:            dryRun,
