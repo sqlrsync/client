@@ -2,6 +2,7 @@ package remote
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 const (
 	SQLRSYNC_CONFIG            = 0x51 // Send to keys and replicaID
 	SQLRSYNC_NEWREPLICAVERSION = 0x52 // New version available
+	SQLRSYNC_KEYREQUEST        = 0x53 // request keys
 )
 
 // ProgressPhase represents the current phase of the sync operation
@@ -397,9 +399,11 @@ type Config struct {
 	InspectionDepth         int  // How many bytes to inspect (default: 32)
 	PingPong                bool
 	AuthToken               string
-	SendConfigCmd           bool // the -sqlrsync file doesn't exist, so make a token
-	LocalHostname           string
-	LocalAbsolutePath       string
+	SendKeyRequest          bool // the -sqlrsync file doesn't exist, so make a token
+
+	SendConfigCmd     bool // we don't have the version number or remote path
+	LocalHostname     string
+	LocalAbsolutePath string
 
 	// Progress tracking
 	ProgressConfig   *ProgressConfig
@@ -442,6 +446,7 @@ type Client struct {
 	NewPullKey     string
 	NewPushKey     string
 	ReplicaID      string
+	Version        string
 	ReplicaPath    string
 	SetPublic      bool
 	newVersionChan chan struct{}
@@ -694,9 +699,6 @@ func (c *Client) Connect() error {
 	}
 	if c.config.SetPublic {
 		headers.Set("X-SetPublic", fmt.Sprintf("%t", c.config.SetPublic))
-	}
-	if c.config.Subscribe {
-		headers.Set("X-Subscribe", "1")
 	}
 
 	conn, response, err := dialer.DialContext(connectCtx, u.String(), headers)
@@ -1238,12 +1240,7 @@ func (c *Client) readLoop() {
 			}
 
 			if messageType == websocket.TextMessage {
-				accessKeyLength := 22
-				replicaIDLength := 18
-				readPullKeyResp := "NEWPULLKEY="
-				readPushKeyResp := "NEWPUSHKEY="
-				replicaIDResp := "REPLICAID="
-				replicaPathResp := "REPLICAPATH="
+				configMsgResp := "CONFIG="
 				messageResp := "MESSAGE="
 				abortResp := "ABORT="
 				// Handle text messages for NEWPULLKEY, NEWPUSHKEY, REPLICAID
@@ -1255,19 +1252,30 @@ func (c *Client) readLoop() {
 					c.setConnected(false)
 					message := strData[len(abortResp):]
 					c.setError(fmt.Errorf("server aborted connection: %s", message))
-				} else if (len(data) >= len(readPullKeyResp)+accessKeyLength) && strings.HasPrefix(strData, readPullKeyResp) {
-					c.NewPullKey = strData[len(readPullKeyResp):]
-					c.logger.Debug("📥 Received new Pull Key:", zap.String("key", c.NewPullKey))
-				} else if (len(data) >= len(readPushKeyResp)+accessKeyLength) && strings.HasPrefix(strData, readPushKeyResp) {
-
-					c.NewPushKey = strData[len(readPushKeyResp):]
-					c.logger.Debug("📥 Received new Push Key:", zap.String("key", c.NewPushKey))
-				} else if (len(data) >= len(replicaIDResp)+replicaIDLength) && strings.HasPrefix(strData, replicaIDResp) {
-					c.ReplicaID = strData[len(replicaIDResp):]
-					c.logger.Debug("📥 Received Replica ID:", zap.String("id", c.ReplicaID))
-				} else if (len(data) >= len(replicaPathResp)) && strings.HasPrefix(strData, replicaPathResp) {
-					c.ReplicaPath = strData[len(replicaPathResp):]
-					c.logger.Debug("📥 Received new Replica Path:", zap.String("path", c.ReplicaPath))
+				} else if (len(data) >= len(configMsgResp)) && strings.HasPrefix(strData, configMsgResp) {
+					// CONFIG={JSON}
+					jsonStr := strData[len(configMsgResp):]
+					var configMsg map[string]interface{}
+					err := json.Unmarshal([]byte(jsonStr), &configMsg)
+					if err != nil {
+						c.logger.Error("Failed to parse CONFIG JSON", zap.Error(err))
+						continue
+					}
+					if configMsg["newPullKey"] != nil {
+						c.NewPullKey = configMsg["newPullKey"].(string)
+					}
+					if configMsg["newPushKey"] != nil {
+						c.NewPushKey = configMsg["newPushKey"].(string)
+					}
+					if configMsg["replicaID"] != nil {
+						c.ReplicaID = configMsg["replicaID"].(string)
+					}
+					if configMsg["replicaPath"] != nil {
+						c.ReplicaPath = configMsg["replicaPath"].(string)
+					}
+					if configMsg["committedVersionID"] != nil {
+						c.Version = configMsg["committedVersionID"].(string)
+					}
 				} else if (len(data) >= len(messageResp)) && strings.HasPrefix(strData, messageResp) {
 					fmt.Println(strData[len(messageResp):])
 				}
@@ -1351,6 +1359,15 @@ func (c *Client) writeLoop() {
 			// Set write deadline
 			conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 
+			if c.config.SendConfigCmd {
+				conn.WriteMessage(websocket.BinaryMessage, []byte{SQLRSYNC_CONFIG})
+				c.config.SendConfigCmd = false
+			}
+			if c.config.SendKeyRequest {
+				conn.WriteMessage(websocket.BinaryMessage, []byte{SQLRSYNC_KEYREQUEST})
+				c.config.SendKeyRequest = false
+			}
+
 			// Inspect raw WebSocket outbound traffic
 			c.inspector.LogWebSocketTraffic(data, "OUT (Client → Server)", c.config.EnableTrafficInspection)
 
@@ -1366,12 +1383,6 @@ func (c *Client) writeLoop() {
 				default:
 				}
 				return
-			}
-
-			if c.config.SendConfigCmd {
-				conn.WriteMessage(websocket.BinaryMessage, []byte{SQLRSYNC_CONFIG})
-				c.config.SendConfigCmd = false
-				c.logger.Debug("🔑 Also asked for keys and replicaID.")
 			}
 
 			c.logger.Debug("Sent message to remote", zap.Int("bytes", len(data)))
@@ -1392,6 +1403,9 @@ func (c *Client) GetReplicaID() string {
 }
 func (c *Client) GetReplicaPath() string {
 	return c.ReplicaPath
+}
+func (c *Client) GetVersion() string {
+	return c.Version
 }
 
 // WaitForNewVersion blocks until a new version notification is received (0x52)

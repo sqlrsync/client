@@ -24,6 +24,7 @@ const (
 	MsgTypeUnsubscribe   = "UNSUBSCRIBE"
 	MsgTypeError         = "ERROR"
 )
+const PING_INTERVAL = 1 * time.Hour
 
 // Message represents a subscription control message
 type Message struct {
@@ -372,7 +373,7 @@ func (m *Manager) readLoop() {
 			return
 		}
 
-		conn.SetReadDeadline(time.Now().Add(70 * time.Second)) // Longer than ping interval
+		conn.SetReadDeadline(time.Now().Add(PING_INTERVAL + 2*time.Minute)) // Longer than ping interval
 
 		messageType, data, err := conn.ReadMessage()
 		if err != nil {
@@ -487,7 +488,7 @@ func (m *Manager) handleMessage(msg Message) {
 
 // pingLoop sends periodic ping messages
 func (m *Manager) pingLoop() {
-	ticker := time.NewTicker(5 * time.Minute) // 1 minute ping interval
+	ticker := time.NewTicker(PING_INTERVAL)
 	defer ticker.Stop()
 
 	for {
