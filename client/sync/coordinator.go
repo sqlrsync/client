@@ -25,6 +25,7 @@ const (
 	OperationPull Operation = iota
 	OperationPush
 	OperationSubscribe
+	OperationLocalSync
 )
 
 // Config holds sync coordinator configuration
@@ -36,6 +37,7 @@ type Config struct {
 	ProvidedReplicaID string // Explicitly provided replica ID
 	LocalPath         string
 	RemotePath        string
+	ReplicaPath       string // For LOCAL TO LOCAL sync
 	Version           string
 	Operation         Operation
 	SetPublic         bool
@@ -92,6 +94,8 @@ func (c *Coordinator) Execute() error {
 		return c.executePush()
 	case OperationSubscribe:
 		return c.executeSubscribe()
+	case OperationLocalSync:
+		return c.executeLocalSync()
 	default:
 		return fmt.Errorf("unknown operation")
 	}
@@ -499,6 +503,47 @@ func (c *Coordinator) performPushSync(localClient *bridge.Client, remoteClient *
 
 	// Run the origin sync through the bridge
 	return localClient.RunPushSync(readFunc, writeFunc)
+}
+
+// executeLocalSync performs a direct local-to-local sync operation
+func (c *Coordinator) executeLocalSync() error {
+	// Validate that both database files exist
+	if _, err := os.Stat(c.config.LocalPath); os.IsNotExist(err) {
+		return fmt.Errorf("origin database file does not exist: %s", c.config.LocalPath)
+	}
+
+	// For replica, it's okay if it doesn't exist - it will be created
+	absOriginPath, err := filepath.Abs(c.config.LocalPath)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path for origin: %w", err)
+	}
+
+	absReplicaPath, err := filepath.Abs(c.config.ReplicaPath)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path for replica: %w", err)
+	}
+
+	fmt.Printf("Syncing LOCAL to LOCAL: %s → %s\n", absOriginPath, absReplicaPath)
+
+	// Create local client for SQLite operations
+	localClient, err := bridge.New(&bridge.Config{
+		DatabasePath: absOriginPath,
+		DryRun:       c.config.DryRun,
+		Logger:       c.logger.Named("local"),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create local client: %w", err)
+	}
+	defer localClient.Close()
+
+	// Perform direct sync
+	if err := localClient.RunDirectSync(absReplicaPath); err != nil {
+		return fmt.Errorf("local-to-local synchronization failed: %w", err)
+	}
+
+	c.logger.Info("Local-to-local synchronization completed successfully")
+	fmt.Println("✅ Local sync completed")
+	return nil
 }
 
 // Close cleanly shuts down the coordinator

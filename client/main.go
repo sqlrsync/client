@@ -72,11 +72,10 @@ func runSync(cmd *cobra.Command, args []string) error {
 	if len(versionRaw) == 2 {
 		version = strings.TrimPrefix(strings.ToLower(versionRaw[1]), "v")
 		remotePath = versionRaw[0]
-	}
-
-	versionCheck, _ := strconv.Atoi(version)
-	if strings.HasPrefix(version, "latest") && versionCheck <= 0 {
-		return fmt.Errorf("invalid version specified: %s (must be `latest`, `latest-<number>`, or  `<number>` where the number is greater than 0)", version)
+		versionCheck, _ := strconv.Atoi(version)
+		if strings.HasPrefix(version, "latest") && versionCheck <= 0 {
+			return fmt.Errorf("invalid version specified: %s (must be `latest`, `latest-<number>`, or  `<number>` where the number is greater than 0)", version)
+		}
 	}
 
 	// Create sync coordinator
@@ -88,7 +87,8 @@ func runSync(cmd *cobra.Command, args []string) error {
 		ProvidedReplicaID: replicaID,
 		LocalPath:         localPath,
 		RemotePath:        remotePath,
-		Version:           version, // Could be extended to parse @version syntax
+		ReplicaPath:       remotePath, // For LOCAL TO LOCAL, remotePath is actually the replica path
+		Version:           version,    // Could be extended to parse @version syntax
 		Operation:         operation,
 		SetPublic:         SetPublic,
 		DryRun:            dryRun,
@@ -137,7 +137,8 @@ func determineOperation(args []string) (sync.Operation, string, string, error) {
 			}
 			return sync.OperationPull, replica, origin, nil
 		} else if originLocal && replicaLocal {
-			return sync.Operation(0), "", "", fmt.Errorf("local to local sync not yet supported")
+			// LOCAL LOCAL -> direct local sync
+			return sync.OperationLocalSync, origin, replica, nil
 		} else {
 			return sync.Operation(0), "", "", fmt.Errorf("remote to remote sync not supported")
 		}
