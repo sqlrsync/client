@@ -31,7 +31,6 @@ var (
 	showVersion        bool
 )
 
-var NoCommitMessage = "<!--NO_SQLRSYNC_MESSAGE-->"
 var MAX_MESSAGE_SIZE = 4096
 
 var rootCmd = &cobra.Command{
@@ -76,10 +75,8 @@ func runSync(cmd *cobra.Command, args []string) error {
 
 	var commitMessage []byte
 
-	if commitMessageParam == NoCommitMessage {
+	if len(commitMessageParam) == 0 {
 		commitMessage = nil
-	} else if len(commitMessageParam) == 0 {
-
 	} else {
 		if len(commitMessageParam) > MAX_MESSAGE_SIZE {
 			return fmt.Errorf("commit message too long (max %d characters)", MAX_MESSAGE_SIZE)
@@ -270,7 +267,7 @@ func setupLogger() {
 func init() {
 	rootCmd.Flags().StringVar(&pullKey, "pullKey", "", "Authentication key for PULL operations")
 	rootCmd.Flags().StringVar(&pushKey, "pushKey", "", "Authentication key for PUSH operations")
-	rootCmd.Flags().StringVarP(&commitMessageParam, "message", "m", NoCommitMessage, "Commit message for the PUSH operation")
+	rootCmd.Flags().StringVarP(&commitMessageParam, "message", "m", "", "Commit message for the PUSH operation")
 	rootCmd.Flags().StringVar(&replicaID, "replicaID", "", "Replica ID for the remote database")
 	rootCmd.Flags().StringVarP(&serverURL, "server", "s", "wss://sqlrsync.com", "Server URL for remote operations")
 	rootCmd.Flags().BoolVar(&subscribing, "subscribe", false, "Enable subscription to PULL changes")
