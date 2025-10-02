@@ -189,6 +189,7 @@ jobs:
         else
           echo "Tag v$VERSION does not exist, will create"
           echo "tag-created=true" >> $GITHUB_OUTPUT
+        fi
     
     - name: Download all release artifacts
       if:  steps.tag-check.outputs.tag-created == 'true'
