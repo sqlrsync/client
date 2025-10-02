@@ -12,7 +12,7 @@ import (
 
 // ResolveResult contains the resolved authentication information
 type ResolveResult struct {
-	AuthToken    string
+	AccessToken    string
 	ReplicaID    string
 	ServerURL    string
 	RemotePath   string
@@ -55,7 +55,7 @@ func (r *Resolver) Resolve(req *ResolveRequest) (*ResolveResult, error) {
 	// 1. Try environment variable first
 	if token := os.Getenv("SQLRSYNC_AUTH_TOKEN"); token != "" {
 		r.logger.Debug("Using SQLRSYNC_AUTH_TOKEN from environment")
-		result.AuthToken = token
+		result.AccessToken = token
 		result.ReplicaID = req.ProvidedReplicaID
 		return result, nil
 	}
@@ -63,14 +63,14 @@ func (r *Resolver) Resolve(req *ResolveRequest) (*ResolveResult, error) {
 	// 2. Try explicitly provided keys
 	if req.ProvidedPullKey != "" {
 		r.logger.Debug("Using provided pull key")
-		result.AuthToken = req.ProvidedPullKey
+		result.AccessToken = req.ProvidedPullKey
 		result.ReplicaID = req.ProvidedReplicaID
 		return result, nil
 	}
 
 	if req.ProvidedPushKey != "" {
 		r.logger.Debug("Using provided push key")
-		result.AuthToken = req.ProvidedPushKey
+		result.AccessToken = req.ProvidedPushKey
 		result.ReplicaID = req.ProvidedReplicaID
 		return result, nil
 	}
@@ -114,7 +114,7 @@ func (r *Resolver) Resolve(req *ResolveRequest) (*ResolveResult, error) {
 	if req.Operation == "push" {
 		if os.Getenv("SQLRSYNC_ADMIN_KEY") != "" {
 			r.logger.Debug("Using SQLRSYNC_ADMIN_KEY from environment")
-			result.AuthToken = os.Getenv("SQLRSYNC_ADMIN_KEY")
+			result.AccessToken = os.Getenv("SQLRSYNC_ADMIN_KEY")
 			result.ShouldPrompt = false
 			return result, nil
 		}
@@ -124,7 +124,14 @@ func (r *Resolver) Resolve(req *ResolveRequest) (*ResolveResult, error) {
 		return result, nil
 	}
 
-	// 5. No authentication found
+	// 5. If it's a pull, maybe no key needed
+	if req.Operation == "pull" || req.Operation == "subscribe" {
+		result.AccessToken = ""
+		result.ShouldPrompt = false
+		return result, nil
+	}
+
+	// 6. No authentication found
 	return nil, fmt.Errorf("no authentication credentials found")
 }
 
@@ -162,7 +169,7 @@ func (r *Resolver) resolveFromLocalSecrets(absLocalPath, serverURL string, resul
 	}
 
 	r.logger.Debug("Found authentication in local secrets config")
-	result.AuthToken = dbConfig.PushKey
+	result.AccessToken = dbConfig.PushKey
 	result.ReplicaID = dbConfig.ReplicaID
 	result.RemotePath = dbConfig.RemotePath
 	result.ServerURL = dbConfig.Server
@@ -186,7 +193,7 @@ func (r *Resolver) resolveFromDashFile(localPath string, result *ResolveResult) 
 	}
 
 	r.logger.Debug("Found authentication in -sqlrsync file")
-	result.AuthToken = dashSQLRsync.PullKey
+	result.AccessToken = dashSQLRsync.PullKey
 	result.ReplicaID = dashSQLRsync.ReplicaID
 	result.RemotePath = dashSQLRsync.RemotePath
 	result.ServerURL = dashSQLRsync.Server

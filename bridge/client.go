@@ -6,11 +6,12 @@ import (
 	"go.uber.org/zap"
 )
 
-// Config holds the configuration for the local SQLite client
-type Config struct {
-	DatabasePath string
-	DryRun       bool
-	Logger       *zap.Logger
+// BridgeConfig holds the configuration for the local SQLite client
+type BridgeConfig struct {
+	DatabasePath             string
+	DryRun                   bool
+	Logger                   *zap.Logger
+	EnableSQLiteRsyncLogging bool
 }
 
 // DatabaseInfo holds metadata about the SQLite database
@@ -26,16 +27,16 @@ type ReadFunc func(buffer []byte) (int, error)
 // WriteFunc defines the function signature for writing data to remote
 type WriteFunc func(data []byte) error
 
-// Client handles local SQLite operations and CGO interactions
-type Client struct {
-	Config    *Config
+// BridgeClient handles local SQLite operations and CGO interactions
+type BridgeClient struct {
+	Config    *BridgeConfig
 	Logger    *zap.Logger
 	ReadFunc  ReadFunc
 	WriteFunc WriteFunc
 }
 
 // New creates a new local SQLite client
-func New(config *Config) (*Client, error) {
+func New(config *BridgeConfig) (*BridgeClient, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
@@ -44,7 +45,7 @@ func New(config *Config) (*Client, error) {
 		return nil, fmt.Errorf("logger cannot be nil")
 	}
 
-	client := &Client{
+	client := &BridgeClient{
 		Config: config,
 		Logger: config.Logger,
 	}
@@ -53,7 +54,7 @@ func New(config *Config) (*Client, error) {
 }
 
 // GetDatabaseInfo retrieves metadata about the SQLite database
-func (c *Client) GetDatabaseInfo() (*DatabaseInfo, error) {
+func (c *BridgeClient) GetDatabaseInfo() (*DatabaseInfo, error) {
 	c.Logger.Debug("Getting database info", zap.String("path", c.Config.DatabasePath))
 
 	info, err := cgoGetDatabaseInfo(c.Config.DatabasePath)
@@ -70,7 +71,7 @@ func (c *Client) GetDatabaseInfo() (*DatabaseInfo, error) {
 }
 
 // RunPushSync runs the origin-side synchronization with provided I/O functions
-func (c *Client) RunPushSync(readFunc ReadFunc, writeFunc WriteFunc) error {
+func (c *BridgeClient) RunPushSync(readFunc ReadFunc, writeFunc WriteFunc) error {
 	c.Logger.Info("Starting origin sync", zap.String("database", c.Config.DatabasePath))
 
 	if c.Config.DryRun {
@@ -95,7 +96,7 @@ func (c *Client) RunPushSync(readFunc ReadFunc, writeFunc WriteFunc) error {
 }
 
 // RunPullSync runs the replica-side synchronization with provided I/O functions
-func (c *Client) RunPullSync(readFunc ReadFunc, writeFunc WriteFunc) error {
+func (c *BridgeClient) RunPullSync(readFunc ReadFunc, writeFunc WriteFunc) error {
 	c.Logger.Info("Starting replica sync", zap.String("database", c.Config.DatabasePath))
 
 	// Store I/O functions for callbacks
@@ -121,7 +122,7 @@ func (c *Client) RunPullSync(readFunc ReadFunc, writeFunc WriteFunc) error {
 }
 
 // RunDirectSync runs direct local synchronization between two SQLite files
-func (c *Client) RunDirectSync(replicaPath string) error {
+func (c *BridgeClient) RunDirectSync(replicaPath string) error {
 	c.Logger.Info("Starting direct local sync",
 		zap.String("origin", c.Config.DatabasePath),
 		zap.String("replica", replicaPath))
@@ -149,7 +150,7 @@ func (c *Client) RunDirectSync(replicaPath string) error {
 }
 
 // Close cleans up resources
-func (c *Client) Close() {
+func (c *BridgeClient) Close() {
 	c.Logger.Debug("Cleaning up local client resources")
 	cgoCleanup()
 }
