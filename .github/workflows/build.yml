@@ -205,4 +205,4 @@ jobs:
         git tag -a $TAG -m "Release $TAG"
         git push origin $TAG
         # create the release and attach the artifact (gh CLI)
-        gh release create $TAG --generate-notes release/*
+        gh release create $TAG --generate-notes sqlrsync-*/sqlrsync-*
