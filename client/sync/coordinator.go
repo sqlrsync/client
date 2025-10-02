@@ -12,6 +12,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/fatih/color"
 	"github.com/sqlrsync/sqlrsync.com/auth"
 	"github.com/sqlrsync/sqlrsync.com/bridge"
 	"github.com/sqlrsync/sqlrsync.com/remote"
@@ -40,7 +41,7 @@ type Config struct {
 	ReplicaPath       string // For LOCAL TO LOCAL sync
 	Version           string
 	Operation         Operation
-	SetPublic         bool
+	SetVisibility     int
 	DryRun            bool
 	Logger            *zap.Logger
 	Verbose           bool
@@ -101,6 +102,64 @@ func (c *Coordinator) Execute() error {
 	}
 }
 
+// displayDryRunInfo displays dry run information for different operations
+func (c *Coordinator) displayDryRunInfo(operation string, authResult *auth.ResolveResult, absLocalPath, serverURL, remotePath, localHostname string) {
+	fmt.Println("SQLRsync Dry Run:")
+
+	switch operation {
+	case "push":
+		fmt.Printf(" - Mode:           %s the LOCAL ORIGIN file up to the REMOTE REPLICA\n", color.YellowString("PUSHing"))
+		fmt.Printf(" - LOCAL ORIGIN:   %s\n", color.GreenString(absLocalPath))
+		if remotePath == "" {
+			fmt.Println(" - REMOTE REPLICA: " + color.YellowString("(None - the server will assign a path using this hostname)"))
+			fmt.Printf("   - Hostname:     %s\n", color.GreenString(localHostname))
+		} else {
+			fmt.Printf(" - REMOTE REPLICA: %s\n", color.GreenString(remotePath))
+		}
+	case "pull":
+		fmt.Printf(" - Mode:           %s the REMOTE ORIGIN file down to LOCAL REPLICA\n", color.YellowString("PULLing"))
+		fmt.Printf(" - REMOTE ORIGIN:  %s\n", color.GreenString(remotePath))
+		fmt.Printf(" - LOCAL REPLICA:  %s\n", color.GreenString(absLocalPath))
+	case "subscribe":
+		fmt.Printf(" - Mode:           %s to REMOTE ORIGIN to PULL down current and future updates\n", color.YellowString("SUBSCRIBing"))
+		fmt.Printf(" - REMOTE ORIGIN:  %s\n", color.GreenString(remotePath))
+		fmt.Printf(" - LOCAL REPLICA:  %s\n", color.GreenString(absLocalPath))
+	case "local":
+		fmt.Printf(" - Mode:           %s between two databases\n", color.YellowString("LOCAL ONLY"))
+	}
+
+	if operation != "local" {
+		fmt.Printf(" - Server:         %s\n", color.GreenString(serverURL))
+
+		fmt.Printf(" - Auth Token:     %s\n", color.GreenString(authResult.AuthToken))
+
+		if operation == "push" {
+			switch c.config.SetVisibility {
+			case 0:
+				fmt.Println(" - Visibility:     " + color.YellowString("PRIVATE") + " (only accessible with access key)")
+			case 1:
+				fmt.Println(" - Visibility:     " + color.YellowString("UNLISTED") + " (anyone with the link can access)")
+			case 2:
+				fmt.Println(" - Visibility:     " + color.GreenString("PUBLIC") + " (anyone can access)")
+			}
+		}
+
+		if c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath) {
+			fmt.Println(" - A shareable config (the -sqlrsync file) " + color.GreenString("WILL BE") + " created for future PULLs and SUBSCRIBEs")
+		} else {
+			fmt.Println(" - A shareable config (the -sqlrsync file) will " + color.RedString("NOT") + " be created")
+		}
+	} else {
+		// For local sync, show the replica path
+		if c.config.ReplicaPath != "" {
+			absReplicaPath, _ := filepath.Abs(c.config.ReplicaPath)
+			fmt.Printf(" - LOCAL ORIGIN:   %s\n", color.GreenString(absLocalPath))
+			fmt.Printf(" - LOCAL REPLICA:  %s\n", color.GreenString(absReplicaPath))
+		}
+	}
+	fmt.Println("\nAfter running this command, REPLICA will become a copy of ORIGIN at the moment the command begins.")
+}
+
 // resolveAuth resolves authentication for the given operation
 func (c *Coordinator) resolveAuth(operation string) (*auth.ResolveResult, error) {
 	req := &auth.ResolveRequest{
@@ -154,6 +213,28 @@ func (c *Coordinator) executeSubscribe() error {
 		return fmt.Errorf("authentication failed: %w", err)
 	}
 
+	// Check for dry run mode
+	if c.config.DryRun {
+		absLocalPath, err := filepath.Abs(c.config.LocalPath)
+		if err != nil {
+			return fmt.Errorf("failed to get absolute path: %w", err)
+		}
+		localHostname, _ := os.Hostname()
+
+		serverURL := authResult.ServerURL
+		if c.config.ServerURL != "" && c.config.ServerURL != "wss://sqlrsync.com" {
+			serverURL = c.config.ServerURL
+		}
+
+		remotePath := authResult.RemotePath
+		if c.config.RemotePath != "" {
+			remotePath = c.config.RemotePath
+		}
+
+		c.displayDryRunInfo("subscribe", authResult, absLocalPath, serverURL, remotePath, localHostname)
+		return nil
+	}
+
 	// Create subscription manager with reconnection configuration
 	c.subManager = subscription.NewManager(&subscription.Config{
 		ServerURL:             authResult.ServerURL,
@@ -196,7 +277,7 @@ func (c *Coordinator) executeSubscribe() error {
 		}
 
 		// Wait for new version notification
-		var version string;
+		var version string
 		for {
 			version, err = c.subManager.WaitForNewVersionMsg()
 			if err != nil {
@@ -258,6 +339,18 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 		remotePath = c.config.RemotePath
 	}
 
+	// Get absolute path and hostname for dry run display
+	absLocalPath, err := filepath.Abs(c.config.LocalPath)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path: %w", err)
+	}
+	localHostname, _ := os.Hostname()
+
+	if c.config.DryRun {
+		c.displayDryRunInfo("pull", authResult, absLocalPath, serverURL, remotePath, localHostname)
+		return nil
+	}
+
 	if !isSubscription {
 		fmt.Printf("PULLing down from %s/%s@%s ...\n", serverURL, remotePath, version)
 	}
@@ -275,7 +368,7 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 		InspectionDepth:         5,
 		Version:                 version,
 		SendConfigCmd:           true,
-		SendKeyRequest:        c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath),
+		SendKeyRequest:          c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath),
 		//ProgressCallback:        remote.DefaultProgressCallback(remote.FormatSimple),
 		ProgressCallback: nil,
 		ProgressConfig: &remote.ProgressConfig{
@@ -359,8 +452,6 @@ func (c *Coordinator) executePush() error {
 		remotePath = c.config.RemotePath
 	}
 
-	fmt.Printf("PUSHing up to %s/%s ...\n", serverURL, remotePath)
-
 	// Create local client for SQLite operations
 	localClient, err := bridge.New(&bridge.Config{
 		DatabasePath: c.config.LocalPath,
@@ -380,6 +471,13 @@ func (c *Coordinator) executePush() error {
 
 	localHostname, _ := os.Hostname()
 
+	if c.config.DryRun {
+		c.displayDryRunInfo("push", authResult, absLocalPath, serverURL, remotePath, localHostname)
+		return nil
+	}
+
+	fmt.Printf("PUSHing up to %s/%s ...\n", serverURL, remotePath)
+
 	// Create remote client for WebSocket transport
 	remoteClient, err := remote.New(&remote.Config{
 		ServerURL:               serverURL + "/sapi/push/" + remotePath,
@@ -393,7 +491,7 @@ func (c *Coordinator) executePush() error {
 		InspectionDepth:         5,
 		SendKeyRequest:          c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath),
 		SendConfigCmd:           true,
-		SetPublic:               c.config.SetPublic,
+		SetVisibility:           c.config.SetVisibility,
 		ProgressCallback:        nil, //remote.DefaultProgressCallback(remote.FormatSimple),
 		ProgressConfig: &remote.ProgressConfig{
 			Enabled:        true,
@@ -452,10 +550,6 @@ func (c *Coordinator) executePush() error {
 			fmt.Println("   Share this file to allow others to download or subscribe")
 			fmt.Println("   to this database.")
 		}
-	}
-
-	if c.config.SetPublic {
-		fmt.Printf("🌐 This replica is now publicly accessible at sqlrsync.com/%s\n", remoteClient.GetReplicaPath())
 	}
 
 	c.logger.Info("Push synchronization completed successfully")
@@ -521,6 +615,11 @@ func (c *Coordinator) executeLocalSync() error {
 	absReplicaPath, err := filepath.Abs(c.config.ReplicaPath)
 	if err != nil {
 		return fmt.Errorf("failed to get absolute path for replica: %w", err)
+	}
+
+	if c.config.DryRun {
+		c.displayDryRunInfo("local", nil, absOriginPath, "", "", "")
+		return nil
 	}
 
 	fmt.Printf("Syncing LOCAL to LOCAL: %s → %s\n", absOriginPath, absReplicaPath)

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -392,7 +393,7 @@ type Config struct {
 	Version                 string
 	ReplicaID               string
 	Subscribe               bool
-	SetPublic               bool // for PUSH
+	SetVisibility           int // for PUSH
 	Timeout                 int  // in milliseconds
 	Logger                  *zap.Logger
 	EnableTrafficInspection bool // Enable detailed traffic logging
@@ -448,7 +449,7 @@ type Client struct {
 	ReplicaID      string
 	Version        string
 	ReplicaPath    string
-	SetPublic      bool
+	SetVisibility  int
 	newVersionChan chan struct{}
 
 	// Progress tracking
@@ -697,8 +698,8 @@ func (c *Client) Connect() error {
 	if c.config.ReplicaID != "" {
 		headers.Set("X-ReplicaID", c.config.ReplicaID)
 	}
-	if c.config.SetPublic {
-		headers.Set("X-SetPublic", fmt.Sprintf("%t", c.config.SetPublic))
+	if c.config.SetVisibility != 0 {
+		headers.Set("X-Visibility", strconv.Itoa(c.config.SetVisibility))
 	}
 
 	conn, response, err := dialer.DialContext(connectCtx, u.String(), headers)

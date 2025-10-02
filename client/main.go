@@ -21,6 +21,7 @@ var (
 	verbose     bool
 	dryRun      bool
 	SetPublic   bool
+	SetUnlisted bool
 	subscribing bool
 	pullKey     string
 	pushKey     string
@@ -30,19 +31,30 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "sqlrsync " + VERSION + " [ORIGIN] [REPLICA] or [LOCAL] or [REMOTE]",
-	Short: "SQLite Rsync - Simplified Version",
-	Long: `A web-enabled rsync-like utility for SQLite databases with subscription support.
+	Use:   "sqlrsync [ORIGIN] [REPLICA] or [LOCAL] or [REMOTE]",
+	Short: "SQLRsync v" + VERSION,
+	Long: `SQLRsync v` + VERSION + `
+A web-enabled rsync-like utility for SQLite databases with subscription support.
 
 Usage modes:
-1. Pull from server:       sqlrsync REMOTE [LOCAL] [OPTIONS]
-2. Pull with subscription: sqlrsync REMOTE [LOCAL] --subscribe [OPTIONS]
-3. Push to server:         sqlrsync LOCAL [REMOTE] [OPTIONS]
+1. Push to server:         sqlrsync LOCAL [REMOTE] [OPTIONS]
+2. Pull from server:       sqlrsync REMOTE [LOCAL] [OPTIONS]
+3. Pull with subscription: sqlrsync REMOTE [LOCAL] --subscribe [OPTIONS]
+4. Local to local sync:    sqlrsync LOCAL1 LOCAL2 [OPTIONS]
+
+Where:
+- REMOTE is a path like namespace/db.sqlite (remote server)
+- LOCAL is a local file path like ./db.sqlite or db.sqlite (local file)
+
+Limitations:
+- Pushing to the server requires page size of 4096 (default for SQLite).
+  Check by querying "PRAGMA page_size;".
 
 Examples:
-  sqlrsync namespace/db.sqlite                    # Pull to local db.sqlite
-  sqlrsync namespace/db.sqlite --subscribe       # Pull and watch for updates
-  sqlrsync mydb.sqlite namespace/db.sqlite       # Push local to remote
+  sqlrsync mydb.sqlite                        # Push local to remote
+  sqlrsync namespace/db.sqlite                # Pull to local db.sqlite
+  sqlrsync namespace/db.sqlite --subscribe    # Pull and watch for updates
+  sqlrsync mydb.sqlite mydb2.sqlite           # Local to local sync
 `,
 	Version: VERSION,
 	PreRun: func(cmd *cobra.Command, args []string) {
@@ -78,6 +90,15 @@ func runSync(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	visibility := 0
+	if SetPublic && SetUnlisted {
+		return fmt.Errorf("cannot set both public and unlisted visibility")
+	} else if SetPublic {
+		visibility = 2
+	} else if SetUnlisted {
+		visibility = 1
+	}
+
 	// Create sync coordinator
 	coordinator := sync.NewCoordinator(&sync.Config{
 		ServerURL:         serverURL,
@@ -90,7 +111,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		ReplicaPath:       remotePath, // For LOCAL TO LOCAL, remotePath is actually the replica path
 		Version:           version,    // Could be extended to parse @version syntax
 		Operation:         operation,
-		SetPublic:         SetPublic,
+		SetVisibility:     visibility,
 		DryRun:            dryRun,
 		Logger:            logger,
 		Verbose:           verbose,
@@ -203,7 +224,8 @@ func init() {
 	rootCmd.Flags().StringVarP(&serverURL, "server", "s", "wss://sqlrsync.com", "Server URL for operations")
 	rootCmd.Flags().BoolVar(&subscribing, "subscribe", false, "Enable subscription to PULL changes")
 	rootCmd.Flags().BoolVar(&verbose, "verbose", false, "Enable verbose logging")
-	rootCmd.Flags().BoolVar(&SetPublic, "public", false, "Enable public access to the replica (PUSH only)")
+	rootCmd.Flags().BoolVar(&SetUnlisted, "unlisted", false, "Enable unlisted access to the replica (initial PUSH only)")
+	rootCmd.Flags().BoolVar(&SetPublic, "public", false, "Enable public access to the replica (initial PUSH only)")
 	rootCmd.Flags().BoolVar(&dryRun, "dry", false, "Perform a dry run without making changes")
 	rootCmd.Flags().BoolVarP(&showVersion, "version", "v", false, "Show version information")
 
