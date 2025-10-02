@@ -100,7 +100,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create sync coordinator
-	coordinator := sync.NewCoordinator(&sync.Config{
+	coordinator := sync.NewCoordinator(&sync.CoordinatorConfig{
 		ServerURL:         serverURL,
 		ProvidedAuthToken: getAuthToken(),
 		ProvidedPullKey:   pullKey,

@@ -29,8 +29,8 @@ const (
 	OperationLocalSync
 )
 
-// Config holds sync coordinator configuration
-type Config struct {
+// CoordinatorConfig holds sync coordinator configuration
+type CoordinatorConfig struct {
 	ServerURL         string
 	ProvidedAuthToken string // Explicitly provided auth token
 	ProvidedPullKey   string // Explicitly provided pull key
@@ -49,7 +49,7 @@ type Config struct {
 
 // Coordinator manages sync operations and subscriptions
 type Coordinator struct {
-	config       *Config
+	config       *CoordinatorConfig
 	logger       *zap.Logger
 	authResolver *auth.Resolver
 	subManager   *subscription.Manager
@@ -58,7 +58,7 @@ type Coordinator struct {
 }
 
 // NewCoordinator creates a new sync coordinator
-func NewCoordinator(config *Config) *Coordinator {
+func NewCoordinator(config *CoordinatorConfig) *Coordinator {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Coordinator{
@@ -130,8 +130,11 @@ func (c *Coordinator) displayDryRunInfo(operation string, authResult *auth.Resol
 
 	if operation != "local" {
 		fmt.Printf(" - Server:         %s\n", color.GreenString(serverURL))
-
-		fmt.Printf(" - Auth Token:     %s\n", color.GreenString(authResult.AuthToken))
+		if authResult.AccessToken != "" {
+			fmt.Printf(" - Access Token:   %s\n", color.GreenString(authResult.AccessToken))
+		} else {
+			fmt.Printf(" - Access Token:   %s\n", color.YellowString("(none)"))
+		}
 
 		if operation == "push" {
 			switch c.config.SetVisibility {
@@ -176,11 +179,11 @@ func (c *Coordinator) resolveAuth(operation string) (*auth.ResolveResult, error)
 	// Try explicit auth token first
 	if c.config.ProvidedAuthToken != "" {
 		return &auth.ResolveResult{
-			AuthToken:  c.config.ProvidedAuthToken,
-			ReplicaID:  c.config.ProvidedReplicaID,
-			ServerURL:  c.config.ServerURL,
-			RemotePath: c.config.RemotePath,
-			LocalPath:  c.config.LocalPath,
+			AccessToken: c.config.ProvidedAuthToken,
+			ReplicaID:   c.config.ProvidedReplicaID,
+			ServerURL:   c.config.ServerURL,
+			RemotePath:  c.config.RemotePath,
+			LocalPath:   c.config.LocalPath,
 		}, nil
 	}
 
@@ -195,7 +198,7 @@ func (c *Coordinator) resolveAuth(operation string) (*auth.ResolveResult, error)
 		if err != nil {
 			return nil, err
 		}
-		result.AuthToken = token
+		result.AccessToken = token
 		result.ShouldPrompt = false
 	}
 
@@ -239,7 +242,7 @@ func (c *Coordinator) executeSubscribe() error {
 	c.subManager = subscription.NewManager(&subscription.Config{
 		ServerURL:             authResult.ServerURL,
 		ReplicaPath:           authResult.RemotePath,
-		AuthToken:             authResult.AuthToken,
+		AuthToken:             authResult.AccessToken,
 		ReplicaID:             authResult.ReplicaID,
 		Logger:                c.logger.Named("subscription"),
 		MaxReconnectAttempts:  20,              // Infinite reconnect attempts
@@ -357,18 +360,18 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 
 	// Create remote client for WebSocket transport
 	remoteClient, err := remote.New(&remote.Config{
-		ServerURL:               serverURL + "/sapi/pull/" + remotePath,
-		AuthToken:               authResult.AuthToken,
-		ReplicaID:               authResult.ReplicaID,
-		Timeout:                 8000,
-		PingPong:                false, // No ping/pong needed for single sync
-		Logger:                  c.logger.Named("remote"),
-		Subscribe:               false, // Subscription handled separately
-		EnableTrafficInspection: c.config.Verbose,
-		InspectionDepth:         5,
-		Version:                 version,
-		SendConfigCmd:           true,
-		SendKeyRequest:          c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath),
+		ServerURL:                serverURL + "/sapi/pull/" + remotePath,
+		AuthToken:                authResult.AccessToken,
+		ReplicaID:                authResult.ReplicaID,
+		Timeout:                  8000,
+		PingPong:                 false, // No ping/pong needed for single sync
+		Logger:                   c.logger.Named("remote"),
+		Subscribe:                false, // Subscription handled separately
+		EnableTrafficInspection:  c.config.Verbose,
+		InspectionDepth:          5,
+		Version:                  version,
+		SendConfigCmd:            true,
+		SendKeyRequest:           c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath),
 		//ProgressCallback:        remote.DefaultProgressCallback(remote.FormatSimple),
 		ProgressCallback: nil,
 		ProgressConfig: &remote.ProgressConfig{
@@ -392,10 +395,11 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 	}
 
 	// Create local client for SQLite operations
-	localClient, err := bridge.New(&bridge.Config{
+	localClient, err := bridge.New(&bridge.BridgeConfig{
 		DatabasePath: c.config.LocalPath,
 		DryRun:       c.config.DryRun,
 		Logger:       c.logger.Named("local"),
+		EnableSQLiteRsyncLogging: c.config.Verbose,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create local client: %w", err)
@@ -453,10 +457,11 @@ func (c *Coordinator) executePush() error {
 	}
 
 	// Create local client for SQLite operations
-	localClient, err := bridge.New(&bridge.Config{
+	localClient, err := bridge.New(&bridge.BridgeConfig{
 		DatabasePath: c.config.LocalPath,
 		DryRun:       c.config.DryRun,
 		Logger:       c.logger.Named("local"),
+		EnableSQLiteRsyncLogging: c.config.Verbose,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create local client: %w", err)
@@ -483,7 +488,7 @@ func (c *Coordinator) executePush() error {
 		ServerURL:               serverURL + "/sapi/push/" + remotePath,
 		PingPong:                true,
 		Timeout:                 15000,
-		AuthToken:               authResult.AuthToken,
+		AuthToken:               authResult.AccessToken,
 		Logger:                  c.logger.Named("remote"),
 		EnableTrafficInspection: c.config.Verbose,
 		LocalHostname:           localHostname,
@@ -557,7 +562,7 @@ func (c *Coordinator) executePush() error {
 }
 
 // performPullSync executes the pull synchronization
-func (c *Coordinator) performPullSync(localClient *bridge.Client, remoteClient *remote.Client) error {
+func (c *Coordinator) performPullSync(localClient *bridge.BridgeClient, remoteClient *remote.Client) error {
 	// Create I/O bridge between remote and local clients
 	readFunc := func(buffer []byte) (int, error) {
 		return remoteClient.Read(buffer)
@@ -579,7 +584,7 @@ func (c *Coordinator) performPullSync(localClient *bridge.Client, remoteClient *
 }
 
 // performPushSync executes the push synchronization
-func (c *Coordinator) performPushSync(localClient *bridge.Client, remoteClient *remote.Client) error {
+func (c *Coordinator) performPushSync(localClient *bridge.BridgeClient, remoteClient *remote.Client) error {
 	// Create I/O bridge between local and remote clients
 	readFunc := func(buffer []byte) (int, error) {
 		return remoteClient.Read(buffer)
@@ -625,10 +630,11 @@ func (c *Coordinator) executeLocalSync() error {
 	fmt.Printf("Syncing LOCAL to LOCAL: %s → %s\n", absOriginPath, absReplicaPath)
 
 	// Create local client for SQLite operations
-	localClient, err := bridge.New(&bridge.Config{
-		DatabasePath: absOriginPath,
-		DryRun:       c.config.DryRun,
-		Logger:       c.logger.Named("local"),
+	localClient, err := bridge.New(&bridge.BridgeConfig{
+		DatabasePath:             absOriginPath,
+		DryRun:                   c.config.DryRun,
+		Logger:                   c.logger.Named("local"),
+		EnableSQLiteRsyncLogging: c.config.Verbose,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create local client: %w", err)

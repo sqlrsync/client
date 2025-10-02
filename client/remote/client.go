@@ -389,18 +389,18 @@ func (t *TrafficInspector) parseMessageType(data []byte) string {
 
 // Config holds the configuration for the remote WebSocket client
 type Config struct {
-	ServerURL               string
-	Version                 string
-	ReplicaID               string
-	Subscribe               bool
-	SetVisibility           int // for PUSH
-	Timeout                 int  // in milliseconds
-	Logger                  *zap.Logger
-	EnableTrafficInspection bool // Enable detailed traffic logging
-	InspectionDepth         int  // How many bytes to inspect (default: 32)
-	PingPong                bool
-	AuthToken               string
-	SendKeyRequest          bool // the -sqlrsync file doesn't exist, so make a token
+	ServerURL                string
+	Version                  string
+	ReplicaID                string
+	Subscribe                bool
+	SetVisibility            int // for PUSH
+	Timeout                  int // in milliseconds
+	Logger                   *zap.Logger
+	EnableTrafficInspection  bool // Enable detailed traffic logging
+	InspectionDepth          int  // How many bytes to inspect (default: 32)
+	PingPong                 bool
+	AuthToken                string
+	SendKeyRequest           bool // the -sqlrsync file doesn't exist, so make a token
 
 	SendConfigCmd     bool // we don't have the version number or remote path
 	LocalHostname     string
@@ -680,11 +680,8 @@ func (c *Client) Connect() error {
 	defer connectCancel()
 
 	headers := http.Header{}
-	if c.config.AuthToken == "" || len(c.config.AuthToken) <= 20 {
-		return fmt.Errorf("invalid authtoken: %s", c.config.AuthToken)
-	} else {
-		headers.Set("Authorization", c.config.AuthToken)
-	}
+
+	headers.Set("Authorization", c.config.AuthToken)
 
 	if c.config.LocalHostname != "" {
 		headers.Set("X-LocalHostname", c.config.LocalHostname)
