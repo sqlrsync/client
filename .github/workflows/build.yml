@@ -20,7 +20,7 @@ jobs:
             arch: arm64
           - os: linux
             runs-on: ubuntu-latest
-            arch: amd64
+            arch: x86_64
 
     steps:
       - name: Checkout code
@@ -96,8 +96,8 @@ jobs:
           echo "GOARCH=amd64" >> $GITHUB_ENV
           echo "CGO_ENABLED=1" >> $GITHUB_ENV
 
-      - name: Set build environment (Linux)
-        if: matrix.os == 'linux'
+      - name: Set build environment (Linux x86_64)
+        if: matrix.os == 'linux' && matrix.arch == 'x86_64'
         run: |
           echo "GOOS=linux" >> $GITHUB_ENV
           echo "GOARCH=amd64" >> $GITHUB_ENV
@@ -161,7 +161,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            sqlrsync-linux-amd64/sqlrsync-linux-amd64
+            sqlrsync-linux-x86_64/sqlrsync-linux-x86_64
             sqlrsync-darwin-amd64/sqlrsync-darwin-amd64
             sqlrsync-darwin-arm64/sqlrsync-darwin-arm64
             sqlrsync-windows-amd64/sqlrsync-windows-amd64.exe

@@ -73,13 +73,14 @@ func (c *Client) GetDatabaseInfo() (*DatabaseInfo, error) {
 func (c *Client) RunPushSync(readFunc ReadFunc, writeFunc WriteFunc) error {
 	c.Logger.Info("Starting origin sync", zap.String("database", c.Config.DatabasePath))
 
+	if c.Config.DryRun {
+		fmt.Println("Running in dry-run mode")
+		return nil
+	}
+
 	// Store I/O functions for callbacks
 	c.ReadFunc = readFunc
 	c.WriteFunc = writeFunc
-
-	if c.Config.DryRun {
-		c.Logger.Info("Running in dry-run mode")
-	}
 
 	c.Logger.Debug("Calling C sqlite_rsync_run_origin")
 
@@ -102,7 +103,8 @@ func (c *Client) RunPullSync(readFunc ReadFunc, writeFunc WriteFunc) error {
 	c.WriteFunc = writeFunc
 
 	if c.Config.DryRun {
-		c.Logger.Info("Running in dry-run mode")
+		fmt.Println("Running in dry-run mode. We should not have gotten here.")
+		return nil
 	}
 
 	c.Logger.Debug("Calling C sqlite_rsync_run_replica")
@@ -120,12 +122,13 @@ func (c *Client) RunPullSync(readFunc ReadFunc, writeFunc WriteFunc) error {
 
 // RunDirectSync runs direct local synchronization between two SQLite files
 func (c *Client) RunDirectSync(replicaPath string) error {
-	c.Logger.Info("Starting direct local sync", 
+	c.Logger.Info("Starting direct local sync",
 		zap.String("origin", c.Config.DatabasePath),
 		zap.String("replica", replicaPath))
 
 	if c.Config.DryRun {
-		c.Logger.Info("Running in dry-run mode")
+		fmt.Println("Running in dry-run mode. We should not have gotten here.")
+		return nil
 	}
 
 	verboseLevel := 0
