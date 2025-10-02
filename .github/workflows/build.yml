@@ -196,6 +196,8 @@ jobs:
       uses: actions/download-artifact@v5
     
     - name: Create tag and GitHub Release, attach artifact
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
         TAG=v${{ steps.extract-version.outputs.version }}
         git config user.name "${{ github.actor }}"
