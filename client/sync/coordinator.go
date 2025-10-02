@@ -42,6 +42,7 @@ type CoordinatorConfig struct {
 	Version           string
 	Operation         Operation
 	SetVisibility     int
+	CommitMessage     []byte
 	DryRun            bool
 	Logger            *zap.Logger
 	Verbose           bool
@@ -360,18 +361,18 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 
 	// Create remote client for WebSocket transport
 	remoteClient, err := remote.New(&remote.Config{
-		ServerURL:                serverURL + "/sapi/pull/" + remotePath,
-		AuthToken:                authResult.AccessToken,
-		ReplicaID:                authResult.ReplicaID,
-		Timeout:                  8000,
-		PingPong:                 false, // No ping/pong needed for single sync
-		Logger:                   c.logger.Named("remote"),
-		Subscribe:                false, // Subscription handled separately
-		EnableTrafficInspection:  c.config.Verbose,
-		InspectionDepth:          5,
-		Version:                  version,
-		SendConfigCmd:            true,
-		SendKeyRequest:           c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath),
+		ServerURL:               serverURL + "/sapi/pull/" + remotePath,
+		AuthToken:               authResult.AccessToken,
+		ReplicaID:               authResult.ReplicaID,
+		Timeout:                 8000,
+		PingPong:                false, // No ping/pong needed for single sync
+		Logger:                  c.logger.Named("remote"),
+		Subscribe:               false, // Subscription handled separately
+		EnableTrafficInspection: c.config.Verbose,
+		InspectionDepth:         5,
+		Version:                 version,
+		SendConfigCmd:           true,
+		SendKeyRequest:          c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath),
 		//ProgressCallback:        remote.DefaultProgressCallback(remote.FormatSimple),
 		ProgressCallback: nil,
 		ProgressConfig: &remote.ProgressConfig{
@@ -396,9 +397,9 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 
 	// Create local client for SQLite operations
 	localClient, err := bridge.New(&bridge.BridgeConfig{
-		DatabasePath: c.config.LocalPath,
-		DryRun:       c.config.DryRun,
-		Logger:       c.logger.Named("local"),
+		DatabasePath:             c.config.LocalPath,
+		DryRun:                   c.config.DryRun,
+		Logger:                   c.logger.Named("local"),
 		EnableSQLiteRsyncLogging: c.config.Verbose,
 	})
 	if err != nil {
@@ -458,9 +459,9 @@ func (c *Coordinator) executePush() error {
 
 	// Create local client for SQLite operations
 	localClient, err := bridge.New(&bridge.BridgeConfig{
-		DatabasePath: c.config.LocalPath,
-		DryRun:       c.config.DryRun,
-		Logger:       c.logger.Named("local"),
+		DatabasePath:             c.config.LocalPath,
+		DryRun:                   c.config.DryRun,
+		Logger:                   c.logger.Named("local"),
 		EnableSQLiteRsyncLogging: c.config.Verbose,
 	})
 	if err != nil {
@@ -497,6 +498,7 @@ func (c *Coordinator) executePush() error {
 		SendKeyRequest:          c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath),
 		SendConfigCmd:           true,
 		SetVisibility:           c.config.SetVisibility,
+		CommitMessage:           c.config.CommitMessage,
 		ProgressCallback:        nil, //remote.DefaultProgressCallback(remote.FormatSimple),
 		ProgressConfig: &remote.ProgressConfig{
 			Enabled:        true,

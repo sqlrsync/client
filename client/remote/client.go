@@ -21,6 +21,7 @@ const (
 	SQLRSYNC_CONFIG            = 0x51 // Send to keys and replicaID
 	SQLRSYNC_NEWREPLICAVERSION = 0x52 // New version available
 	SQLRSYNC_KEYREQUEST        = 0x53 // request keys
+	SQLRSYNC_COMMITMESSAGE     = 0x54 // commit message
 )
 
 // ProgressPhase represents the current phase of the sync operation
@@ -132,9 +133,9 @@ func NewTrafficInspector(logger *zap.Logger, depth int) *TrafficInspector {
 }
 
 // InspectOutbound logs outbound traffic (Go → Remote) and returns true if it's ORIGIN_END
-func (t *TrafficInspector) InspectOutbound(data []byte, enableLogging bool) bool {
+func (t *TrafficInspector) InspectOutbound(data []byte, enableLogging bool) string {
 	if len(data) == 0 {
-		return false
+		return ""
 	}
 
 	msgType := t.parseMessageType(data)
@@ -153,7 +154,7 @@ func (t *TrafficInspector) InspectOutbound(data []byte, enableLogging bool) bool
 	}
 
 	// Return whether this is an ORIGIN_END message
-	return msgType == "ORIGIN_END"
+	return msgType
 }
 
 // InspectInbound logs inbound traffic (Remote → Go) and returns true if it's ORIGIN_END
@@ -389,18 +390,19 @@ func (t *TrafficInspector) parseMessageType(data []byte) string {
 
 // Config holds the configuration for the remote WebSocket client
 type Config struct {
-	ServerURL                string
-	Version                  string
-	ReplicaID                string
-	Subscribe                bool
-	SetVisibility            int // for PUSH
-	Timeout                  int // in milliseconds
-	Logger                   *zap.Logger
-	EnableTrafficInspection  bool // Enable detailed traffic logging
-	InspectionDepth          int  // How many bytes to inspect (default: 32)
-	PingPong                 bool
-	AuthToken                string
-	SendKeyRequest           bool // the -sqlrsync file doesn't exist, so make a token
+	ServerURL               string
+	Version                 string
+	ReplicaID               string
+	Subscribe               bool
+	SetVisibility           int // for PUSH
+	CommitMessage           []byte
+	Timeout                 int // in milliseconds
+	Logger                  *zap.Logger
+	EnableTrafficInspection bool // Enable detailed traffic logging
+	InspectionDepth         int  // How many bytes to inspect (default: 32)
+	PingPong                bool
+	AuthToken               string
+	SendKeyRequest          bool // the -sqlrsync file doesn't exist, so make a token
 
 	SendConfigCmd     bool // we don't have the version number or remote path
 	LocalHostname     string
@@ -863,10 +865,22 @@ func (c *Client) isSyncCompleted() bool {
 // handleOutboundTraffic inspects outbound data and handles sync completion detection
 func (c *Client) handleOutboundTraffic(data []byte) {
 	// Always inspect for protocol messages (sync completion detection)
-	isOriginEnd := c.inspector.InspectOutbound(data, c.config.EnableTrafficInspection)
-	if isOriginEnd {
+	outboundCommand := c.inspector.InspectOutbound(data, c.config.EnableTrafficInspection)
+	if outboundCommand == "ORIGIN_END" {
 		c.logger.Info("ORIGIN_END detected - sync completing")
 		c.setSyncCompleted(true)
+	}
+	if outboundCommand == "ORIGIN_BEGIN" {
+		if len(c.config.CommitMessage) > 0 {
+			length := len(c.config.CommitMessage)
+			// Encode length as 2 bytes (big-endian), 2 bytes is ~65k max
+			lenBytes := []byte{
+				byte(length >> 8),
+				byte(length),
+			}
+			c.writeQueue <- append([]byte{SQLRSYNC_COMMITMESSAGE}, append(lenBytes, c.config.CommitMessage...)...)
+			c.config.CommitMessage = nil
+		}
 	}
 
 	// Handle progress tracking
@@ -1357,15 +1371,6 @@ func (c *Client) writeLoop() {
 			// Set write deadline
 			conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 
-			if c.config.SendConfigCmd {
-				conn.WriteMessage(websocket.BinaryMessage, []byte{SQLRSYNC_CONFIG})
-				c.config.SendConfigCmd = false
-			}
-			if c.config.SendKeyRequest {
-				conn.WriteMessage(websocket.BinaryMessage, []byte{SQLRSYNC_KEYREQUEST})
-				c.config.SendKeyRequest = false
-			}
-
 			// Inspect raw WebSocket outbound traffic
 			c.inspector.LogWebSocketTraffic(data, "OUT (Client → Server)", c.config.EnableTrafficInspection)
 
@@ -1381,6 +1386,18 @@ func (c *Client) writeLoop() {
 				default:
 				}
 				return
+			}
+
+			// consider moving this to InspectorOutbound
+
+			// Do this here so ORIGIN_BEGIN sends first
+			if c.config.SendConfigCmd {
+				conn.WriteMessage(websocket.BinaryMessage, []byte{SQLRSYNC_CONFIG})
+				c.config.SendConfigCmd = false
+			}
+			if c.config.SendKeyRequest {
+				conn.WriteMessage(websocket.BinaryMessage, []byte{SQLRSYNC_KEYREQUEST})
+				c.config.SendKeyRequest = false
 			}
 
 			c.logger.Debug("Sent message to remote", zap.Int("bytes", len(data)))

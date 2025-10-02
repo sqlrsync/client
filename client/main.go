@@ -17,18 +17,22 @@ import (
 
 var VERSION = "0.0.2"
 var (
-	serverURL   string
-	verbose     bool
-	dryRun      bool
-	SetPublic   bool
-	SetUnlisted bool
-	subscribing bool
-	pullKey     string
-	pushKey     string
-	replicaID   string
-	logger      *zap.Logger
-	showVersion bool
+	serverURL          string
+	verbose            bool
+	dryRun             bool
+	SetPublic          bool
+	SetUnlisted        bool
+	subscribing        bool
+	pullKey            string
+	pushKey            string
+	commitMessageParam string
+	replicaID          string
+	logger             *zap.Logger
+	showVersion        bool
 )
+
+var NoCommitMessage = "<!--NO_SQLRSYNC_MESSAGE-->"
+var MAX_MESSAGE_SIZE = 4096
 
 var rootCmd = &cobra.Command{
 	Use:   "sqlrsync [ORIGIN] [REPLICA] or [LOCAL] or [REMOTE]",
@@ -70,6 +74,19 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return cmd.Help()
 	}
 
+	var commitMessage []byte
+
+	if commitMessageParam == NoCommitMessage {
+		commitMessage = nil
+	} else if len(commitMessageParam) == 0 {
+
+	} else {
+		if len(commitMessageParam) > MAX_MESSAGE_SIZE {
+			return fmt.Errorf("commit message too long (max %d characters)", MAX_MESSAGE_SIZE)
+		}
+		commitMessage = []byte(commitMessageParam)
+	}
+
 	// Preprocess variables
 	serverURL = strings.TrimRight(serverURL, "/")
 
@@ -81,13 +98,45 @@ func runSync(cmd *cobra.Command, args []string) error {
 
 	versionRaw := strings.SplitN(remotePath, "@", 2)
 	version := "latest"
+
+	// permitted version formats:
+	//            # <none - no @ or anything>
+	// @          # just the at sign
+	// @latest
+	// @1
+	// @30
+	// @v1
+	// @v30
+	// @latest-1
+	// @latest-20
+	//
+
+	// NOT permitted:
+	// @latest1
+	// @latest+1
+	// Therefore this is a good regexp for this https://regex101.com/r/LooJFS/1 /^(latest-\d+)|(latest)|v?(\d+)$/
 	if len(versionRaw) == 2 {
-		version = strings.TrimPrefix(strings.ToLower(versionRaw[1]), "v")
+		verStr := strings.ToLower(strings.TrimPrefix(versionRaw[1], "v"))
 		remotePath = versionRaw[0]
-		versionCheck, _ := strconv.Atoi(version)
-		if strings.HasPrefix(version, "latest") && versionCheck <= 0 {
-			return fmt.Errorf("invalid version specified: %s (must be `latest`, `latest-<number>`, or  `<number>` where the number is greater than 0)", version)
+
+		if !strings.HasPrefix(verStr, "latest") && !strings.HasPrefix(verStr, "latest-") {
+			// Accept plain numbers
+			if _, err := strconv.Atoi(verStr); err != nil {
+				return fmt.Errorf("invalid version specified: %s (must be `latest`, `latest-<number>`, or `<number>`)", verStr)
+			}
+		} else {
+			// Accept latest or latest-N
+			if !strings.HasPrefix(verStr, "latest") {
+				return fmt.Errorf("invalid version specified: %s (must be `latest`, `latest-<number>`, or `<number>`)", verStr)
+			}
+			if strings.HasPrefix(verStr, "latest-") {
+				numStr := strings.TrimPrefix(verStr, "latest-")
+				if n, err := strconv.Atoi(numStr); err != nil || n <= 0 {
+					return fmt.Errorf("invalid version specified: %s (must be `latest`, `latest-<number>`, or `<number>` where number > 0)", verStr)
+				}
+			}
 		}
+		version = verStr
 	}
 
 	visibility := 0
@@ -111,6 +160,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		ReplicaPath:       remotePath, // For LOCAL TO LOCAL, remotePath is actually the replica path
 		Version:           version,    // Could be extended to parse @version syntax
 		Operation:         operation,
+		CommitMessage:     commitMessage,
 		SetVisibility:     visibility,
 		DryRun:            dryRun,
 		Logger:            logger,
@@ -220,8 +270,9 @@ func setupLogger() {
 func init() {
 	rootCmd.Flags().StringVar(&pullKey, "pullKey", "", "Authentication key for PULL operations")
 	rootCmd.Flags().StringVar(&pushKey, "pushKey", "", "Authentication key for PUSH operations")
+	rootCmd.Flags().StringVarP(&commitMessageParam, "message", "m", NoCommitMessage, "Commit message for the PUSH operation")
 	rootCmd.Flags().StringVar(&replicaID, "replicaID", "", "Replica ID for the remote database")
-	rootCmd.Flags().StringVarP(&serverURL, "server", "s", "wss://sqlrsync.com", "Server URL for operations")
+	rootCmd.Flags().StringVarP(&serverURL, "server", "s", "wss://sqlrsync.com", "Server URL for remote operations")
 	rootCmd.Flags().BoolVar(&subscribing, "subscribe", false, "Enable subscription to PULL changes")
 	rootCmd.Flags().BoolVar(&verbose, "verbose", false, "Enable verbose logging")
 	rootCmd.Flags().BoolVar(&SetUnlisted, "unlisted", false, "Enable unlisted access to the replica (initial PUSH only)")
