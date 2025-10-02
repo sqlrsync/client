@@ -26,6 +26,13 @@ jobs:
             arch: x86_64
 
     steps:
+      - name: Security Intention
+        run: |
+          echo "This workflow is intended to build the project in a secure manner:"
+          echo " - Only installs absolutely essential and trusted dependencies. (steps \"Install *\")"
+          echo " - Uses HTTPS for direct package downloads"
+          echo " - Only uses official Github Actions \"actions/*\""
+          
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -152,85 +159,47 @@ jobs:
           name: sqlrsync-${{ matrix.os }}-${{ matrix.arch }}
           path: release/*
 
-  auto-tag:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.extract-version.outputs.version }}
-      tag-created: ${{ steps.tag-check.outputs.tag-created }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Extract version from main.go
-        id: extract-version
-        run: |
-          VERSION=$(grep 'var VERSION = ' client/main.go | sed 's/var VERSION = "\(.*\)"/\1/')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Extracted version: $VERSION"
-
-      - name: Check if tag exists
-        id: tag-check
-        run: |
-          VERSION=${{ steps.extract-version.outputs.version }}
-          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
-            echo "Tag v$VERSION already exists"
-            echo "tag-created=false" >> $GITHUB_OUTPUT
-          else
-            echo "Tag v$VERSION does not exist, will create"
-            echo "tag-created=true" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Create and push tag
-        if: steps.tag-check.outputs.tag-created == 'true'
-        run: |
-          VERSION=${{ steps.extract-version.outputs.version }}
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "v$VERSION" -m "Release v$VERSION"
-          git push origin "v$VERSION"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  create-release:
-    if: needs.auto-tag.outputs.tag-created == 'true'
-    needs: [build, auto-tag]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: v${{ needs.auto-tag.outputs.version }}
-          name: Release v${{ needs.auto-tag.outputs.version }}
-          draft: false
-          prerelease: false
-          files: |
-            sqlrsync-linux-x86_64/sqlrsync-linux-x86_64
-            sqlrsync-darwin-amd64/sqlrsync-darwin-amd64
-            sqlrsync-darwin-arm64/sqlrsync-darwin-arm64
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   release:
-    if: github.event_name == 'release'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: build
+    permissions: 
+      contents: write
+      packages: write
+      issues: write
+      pull-requests: write
+      actions: write
     runs-on: ubuntu-latest
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-
-      - name: Upload to release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            sqlrsync-linux-x86_64/sqlrsync-linux-x86_64
-            sqlrsync-darwin-amd64/sqlrsync-darwin-amd64
-            sqlrsync-darwin-arm64/sqlrsync-darwin-arm64
-        env:
-          GITHUB_TOKEN: ${{ secrets.AUTH_TOKEN_GITHUB }}
+    - uses: actions/checkout@v5
+    
+    - name: Extract version from main.go
+      id: extract-version
+      run: |
+        VERSION=$(grep 'var VERSION = ' client/main.go | sed 's/var VERSION = "\(.*\)"/\1/')
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Extracted version: $VERSION"
+    
+    - name: Check if tag exists
+      id: tag-check
+      run: |
+        VERSION=${{ steps.extract-version.outputs.version }}
+        if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+          echo "Tag v$VERSION already exists"
+          echo "tag-created=false" >> $GITHUB_OUTPUT
+        else
+          echo "Tag v$VERSION does not exist, will create"
+          echo "tag-created=true" >> $GITHUB_OUTPUT
+    
+    - name: Download all release artifacts
+      if:  steps.tag-check.outputs.tag-created == 'true'
+      uses: actions/download-artifact@v5
+    
+    - name: Create tag and GitHub Release, attach artifact
+      run: |
+        TAG=v${{ steps.extract-version.outputs.version }}
+        git config user.name "${{ github.actor }}"
+        git config user.email "${{ github.actor }}@users.noreply.github.com"
+        git tag -a $TAG -m "Release $TAG"
+        git push origin $TAG
+        # create the release and attach the artifact (gh CLI)
+        gh release create $TAG --generate-notes release/*
