@@ -194,6 +194,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		MaxInterval:       maxInterval,
 		MinInterval:       minInterval,
 		AutoMerge:         autoMerge,
+		WsID:              wsID, // Add workspace ID
 	})
 
 	// Execute the operation

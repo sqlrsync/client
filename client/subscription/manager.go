@@ -208,6 +208,11 @@ func (m *Manager) doConnect() error {
 
 	headers.Set("X-ClientVersion", m.config.ClientVersion)
 	headers.Set("X-ClientID", m.config.WsID)
+	if m.config.WsID != "" {
+		headers.Set("X-ClientID", m.config.WsID)
+	} else {
+		m.logger.Fatal("No wsID provided for X-ClientID header")
+	}
 
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
