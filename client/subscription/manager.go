@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -207,9 +208,60 @@ func (m *Manager) doConnect() error {
 
 	m.logger.Debug("Dialing WebSocket", zap.String("url", u.String()))
 
-	conn, _, err := dialer.DialContext(m.ctx, u.String(), headers)
+	conn, response, err := dialer.DialContext(m.ctx, u.String(), headers)
 	if err != nil {
-		return fmt.Errorf("failed to connect to subscription service: %w", err)
+		if response != nil {
+			// Extract detailed error information from the response
+			statusCode := response.StatusCode
+			statusText := response.Status
+			
+			var respBodyStr string
+			if response.Body != nil {
+				respBytes, readErr := io.ReadAll(response.Body)
+				response.Body.Close()
+				if readErr == nil {
+					respBodyStr = strings.TrimSpace(string(respBytes))
+				}
+			}
+			
+			// Create a clean error message
+			var errorMsg strings.Builder
+			errorMsg.WriteString(fmt.Sprintf("HTTP %d (%s)", statusCode, statusText))
+			
+			if respBodyStr != "" {
+				errorMsg.WriteString(fmt.Sprintf(": %s", respBodyStr))
+			}
+			
+			return fmt.Errorf("%s", errorMsg.String())
+		}
+		
+		// Handle cases where response is nil (e.g., network errors, bad handshake)
+		var errorMsg strings.Builder
+		errorMsg.WriteString("Failed to connect to subscription service")
+		
+		// Analyze the error type and provide helpful context
+		errorStr := err.Error()
+		if strings.Contains(errorStr, "bad handshake") {
+			errorMsg.WriteString(" - WebSocket handshake failed")
+			errorMsg.WriteString("\nThis could be due to:")
+			errorMsg.WriteString("\n• Invalid server URL or endpoint")
+			errorMsg.WriteString("\n• Server not supporting WebSocket connections")
+			errorMsg.WriteString("\n• Network connectivity issues")
+			errorMsg.WriteString("\n• Authentication problems")
+		} else if strings.Contains(errorStr, "timeout") {
+			errorMsg.WriteString(" - Connection timeout")
+			errorMsg.WriteString("\nThe server may be overloaded or unreachable")
+		} else if strings.Contains(errorStr, "refused") {
+			errorMsg.WriteString(" - Connection refused")
+			errorMsg.WriteString("\nThe server may be down or the port may be blocked")
+		} else if strings.Contains(errorStr, "no such host") {
+			errorMsg.WriteString(" - DNS resolution failed")
+			errorMsg.WriteString("\nCheck the server hostname in your configuration")
+		}
+		
+		errorMsg.WriteString(fmt.Sprintf("\nOriginal error: %v", err))
+		
+		return fmt.Errorf("%s", errorMsg.String())
 	}
 
 	m.mu.Lock()
