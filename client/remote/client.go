@@ -405,6 +405,7 @@ type Config struct {
 	AuthKey                 string
 	ClientVersion           string // version of the client software
 	SendKeyRequest          bool   // the -sqlrsync file doesn't exist, so make a key
+	AuthToken               string
 
 	SendConfigCmd     bool // we don't have the version number or remote path
 	LocalHostname     string
@@ -708,6 +709,8 @@ func (c *Client) Connect() error {
 	} else {
 		c.logger.Fatal("No wsID provided for X-ClientID header")
 	}
+
+	headers.Set("X-ClientVersion", c.config.ClientVersion)
 
 	if c.config.WsID != "" {
 		headers.Set("X-ClientID", c.config.WsID)
