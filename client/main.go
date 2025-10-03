@@ -169,7 +169,8 @@ func runSync(cmd *cobra.Command, args []string) error {
 		DryRun:            dryRun,
 		Logger:            logger,
 		Verbose:           verbose,
-		WsID:              wsID, // Add workspace ID
+		WsID:              wsID, // Add websocket ID
+		ClientVersion:     VERSION,
 	})
 
 	// Execute the operation

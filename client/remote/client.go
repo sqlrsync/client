@@ -402,6 +402,7 @@ type Config struct {
 	InspectionDepth         int  // How many bytes to inspect (default: 32)
 	PingPong                bool
 	AuthToken               string
+	ClientVersion           string // version of the client software
 	SendKeyRequest          bool // the -sqlrsync file doesn't exist, so make a token
 
 	SendConfigCmd     bool // we don't have the version number or remote path
@@ -685,6 +686,8 @@ func (c *Client) Connect() error {
 	headers := http.Header{}
 
 	headers.Set("Authorization", c.config.AuthToken)
+
+	headers.Set("X-ClientVersion", c.config.ClientVersion);
 
 	if c.config.WsID != "" {
 		headers.Set("X-ClientID", c.config.WsID)

@@ -46,7 +46,8 @@ type CoordinatorConfig struct {
 	DryRun            bool
 	Logger            *zap.Logger
 	Verbose           bool
-	WsID              string // Workspace ID for client identification
+	WsID              string // Websocket ID for client identification
+	ClientVersion     string // version of the client software
 }
 
 // Coordinator manages sync operations and subscriptions
@@ -247,6 +248,7 @@ func (c *Coordinator) executeSubscribe() error {
 		AuthToken:             authResult.AccessToken,
 		ReplicaID:             authResult.ReplicaID,
 		WsID:                  c.config.WsID,
+		ClientVersion:         c.config.ClientVersion,
 		Logger:                c.logger.Named("subscription"),
 		MaxReconnectAttempts:  20,              // Infinite reconnect attempts
 		InitialReconnectDelay: 5 * time.Second, // Start with 5 seconds delay
@@ -376,6 +378,7 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 		SendConfigCmd:           true,
 		SendKeyRequest:          c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath),
 		WsID:                    c.config.WsID, // Add websocket ID
+		ClientVersion:           c.config.ClientVersion,
 		//ProgressCallback:        remote.DefaultProgressCallback(remote.FormatSimple),
 		ProgressCallback: nil,
 		ProgressConfig: &remote.ProgressConfig{
@@ -503,6 +506,7 @@ func (c *Coordinator) executePush() error {
 		SetVisibility:           c.config.SetVisibility,
 		CommitMessage:           c.config.CommitMessage,
 		WsID:                    c.config.WsID, // Add websocket ID
+		ClientVersion:           c.config.ClientVersion,
 		ProgressCallback:        nil,           //remote.DefaultProgressCallback(remote.FormatSimple),
 		ProgressConfig: &remote.ProgressConfig{
 			Enabled:        true,
