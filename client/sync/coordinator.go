@@ -46,6 +46,7 @@ type CoordinatorConfig struct {
 	DryRun            bool
 	Logger            *zap.Logger
 	Verbose           bool
+	Vacuum            bool
 }
 
 // Coordinator manages sync operations and subscriptions
@@ -439,6 +440,22 @@ func (c *Coordinator) executePush() error {
 		return fmt.Errorf("database file does not exist: %s", c.config.LocalPath)
 	}
 
+	// Handle --vacuum flag: create vacuumed temp file and use it for push
+	var actualPushPath string
+	var cleanupVacuum func()
+	if c.config.Vacuum {
+		fmt.Println("🗜️  Creating vacuumed copy for PUSH...")
+		tempPath, cleanup, err := c.vacuumDatabase(c.config.LocalPath)
+		if err != nil {
+			return fmt.Errorf("vacuum failed: %w", err)
+		}
+		actualPushPath = tempPath
+		cleanupVacuum = cleanup
+		defer cleanupVacuum()
+	} else {
+		actualPushPath = c.config.LocalPath
+	}
+
 	// Resolve authentication
 	authResult, err := c.resolveAuth("push")
 	if err != nil {
@@ -457,9 +474,9 @@ func (c *Coordinator) executePush() error {
 		remotePath = c.config.RemotePath
 	}
 
-	// Create local client for SQLite operations
+	// Create local client for SQLite operations (using actualPushPath which may be vacuumed)
 	localClient, err := bridge.New(&bridge.BridgeConfig{
-		DatabasePath:             c.config.LocalPath,
+		DatabasePath:             actualPushPath,
 		DryRun:                   c.config.DryRun,
 		Logger:                   c.logger.Named("local"),
 		EnableSQLiteRsyncLogging: c.config.Verbose,
@@ -651,6 +668,64 @@ func (c *Coordinator) executeLocalSync() error {
 	c.logger.Info("Local-to-local synchronization completed successfully")
 	fmt.Println("✅ Local sync completed")
 	return nil
+}
+
+// vacuumDatabase creates a vacuumed copy of the database in a temp file
+func (c *Coordinator) vacuumDatabase(sourcePath string) (string, func(), error) {
+	// Get source database size
+	sourceInfo, err := os.Stat(sourcePath)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to stat source database: %w", err)
+	}
+	sourceSize := sourceInfo.Size()
+
+	// Check available disk space in /tmp
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs("/tmp", &stat); err != nil {
+		return "", nil, fmt.Errorf("failed to check disk space: %w", err)
+	}
+	availableSpace := int64(stat.Bavail * uint64(stat.Bsize))
+
+	// Ensure at least 16KB will remain after copy
+	requiredSpace := sourceSize + 16384
+	if availableSpace < requiredSpace {
+		return "", nil, fmt.Errorf("insufficient disk space: need %d bytes, only %d available", requiredSpace, availableSpace)
+	}
+
+	// Create temp file with pattern /tmp/sqlrsync-temp-*
+	tempFile, err := os.CreateTemp("", "sqlrsync-temp-*.sqlite")
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tempPath := tempFile.Name()
+	tempFile.Close()
+
+	// Copy source database to temp location
+	sourceData, err := os.ReadFile(sourcePath)
+	if err != nil {
+		os.Remove(tempPath)
+		return "", nil, fmt.Errorf("failed to read source database: %w", err)
+	}
+
+	if err := os.WriteFile(tempPath, sourceData, 0644); err != nil {
+		os.Remove(tempPath)
+		return "", nil, fmt.Errorf("failed to write temp database: %w", err)
+	}
+
+	// Execute VACUUM on the temp file using bridge
+	if err := bridge.ExecuteVacuum(tempPath); err != nil {
+		os.Remove(tempPath)
+		return "", nil, fmt.Errorf("VACUUM execution failed: %w", err)
+	}
+
+	// Return temp path and cleanup function
+	cleanup := func() {
+		if err := os.Remove(tempPath); err != nil {
+			c.logger.Warn("Failed to remove temp vacuum file", zap.String("path", tempPath), zap.Error(err))
+		}
+	}
+
+	return tempPath, cleanup, nil
 }
 
 // Close cleanly shuts down the coordinator

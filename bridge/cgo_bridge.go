@@ -19,6 +19,26 @@ package bridge
 // Forward declarations for Go callbacks
 extern int go_local_read_callback(void* user_data, uint8_t* buffer, int size);
 extern int go_local_write_callback(void* user_data, uint8_t* buffer, int size);
+
+// Helper function to execute VACUUM on a database
+static int execute_vacuum(const char* db_path) {
+    sqlite3 *db;
+    char *err_msg = NULL;
+    int rc;
+
+    rc = sqlite3_open(db_path, &db);
+    if (rc != SQLITE_OK) {
+        return rc;
+    }
+
+    rc = sqlite3_exec(db, "VACUUM", NULL, NULL, &err_msg);
+    if (err_msg) {
+        sqlite3_free(err_msg);
+    }
+
+    sqlite3_close(db);
+    return rc;
+}
 */
 import "C"
 import (
@@ -325,6 +345,22 @@ func cgoRunDirectSync(originDbPath, replicaDbPath string, dryRun bool, verbose i
 		return &SQLiteRsyncError{
 			Code:    int(result),
 			Message: "direct sync failed",
+		}
+	}
+
+	return nil
+}
+
+// ExecuteVacuum runs VACUUM on the specified database
+func ExecuteVacuum(dbPath string) error {
+	cDbPath := C.CString(dbPath)
+	defer C.free(unsafe.Pointer(cDbPath))
+
+	result := C.execute_vacuum(cDbPath)
+	if result != 0 {
+		return &SQLiteRsyncError{
+			Code:    int(result),
+			Message: "VACUUM failed",
 		}
 	}
 
