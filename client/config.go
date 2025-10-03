@@ -9,12 +9,14 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/google/uuid"
 )
 
 // .config/sqlrsync/defaults.toml
 type DefaultsConfig struct {
 	Defaults struct {
 		Server string `toml:"server"`
+		WsID   string `toml:"wsID"`
 	} `toml:"defaults"`
 }
 
@@ -78,6 +80,14 @@ func LoadDefaultsConfig() (*DefaultsConfig, error) {
 			// Return default config if file doesn't exist
 			config := &DefaultsConfig{}
 			config.Defaults.Server = "wss://sqlrsync.com"
+			// Generate wsID if it doesn't exist
+			if err := generateAndSetWsID(config); err != nil {
+				return nil, fmt.Errorf("failed to generate wsID: %w", err)
+			}
+			// Save the new config with wsID
+			if err := SaveDefaultsConfig(config); err != nil {
+				return nil, fmt.Errorf("failed to save defaults config with wsID: %w", err)
+			}
 			return config, nil
 		}
 		return nil, fmt.Errorf("failed to read defaults config file %s: %w", path, err)
@@ -93,7 +103,43 @@ func LoadDefaultsConfig() (*DefaultsConfig, error) {
 		config.Defaults.Server = "wss://sqlrsync.com"
 	}
 
+	// Generate wsID if it doesn't exist
+	needsSave := false
+	if config.Defaults.WsID == "" {
+		if err := generateAndSetWsID(&config); err != nil {
+			return nil, fmt.Errorf("failed to generate wsID: %w", err)
+		}
+		needsSave = true
+	}
+
+	// Save config if we made changes
+	if needsSave {
+		if err := SaveDefaultsConfig(&config); err != nil {
+			return nil, fmt.Errorf("failed to save defaults config with wsID: %w", err)
+		}
+	}
+
 	return &config, nil
+}
+
+// generateAndSetWsID generates a new wsID (UUID + hostname) and sets it in the config
+func generateAndSetWsID(config *DefaultsConfig) error {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return fmt.Errorf("failed to get hostname: %w", err)
+	}
+
+	config.Defaults.WsID = hostname + ":" + uuid.New().String()
+	return nil
+}
+
+// GetWsID loads the defaults config and returns the wsID
+func GetWsID() (string, error) {
+	config, err := LoadDefaultsConfig()
+	if err != nil {
+		return "", fmt.Errorf("failed to load defaults config: %w", err)
+	}
+	return config.Defaults.WsID, nil
 }
 
 func SaveDefaultsConfig(config *DefaultsConfig) error {
