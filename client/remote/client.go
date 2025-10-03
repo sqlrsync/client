@@ -402,11 +402,13 @@ type Config struct {
 	InspectionDepth         int  // How many bytes to inspect (default: 32)
 	PingPong                bool
 	AuthToken               string
+	ClientVersion           string // version of the client software
 	SendKeyRequest          bool // the -sqlrsync file doesn't exist, so make a token
 
 	SendConfigCmd     bool // we don't have the version number or remote path
 	LocalHostname     string
 	LocalAbsolutePath string
+	WsID              string // Workspace ID for X-ClientID header
 
 	// Progress tracking
 	ProgressConfig   *ProgressConfig
@@ -685,6 +687,14 @@ func (c *Client) Connect() error {
 
 	headers.Set("Authorization", c.config.AuthToken)
 
+	headers.Set("X-ClientVersion", c.config.ClientVersion);
+
+	if c.config.WsID != "" {
+		headers.Set("X-ClientID", c.config.WsID)
+	} else {
+		c.logger.Fatal("No wsID provided for X-ClientID header")
+	}
+
 	if c.config.LocalHostname != "" {
 		headers.Set("X-LocalHostname", c.config.LocalHostname)
 	}
@@ -703,12 +713,58 @@ func (c *Client) Connect() error {
 
 	conn, response, err := dialer.DialContext(connectCtx, u.String(), headers)
 	if err != nil {
-		if response != nil && response.Body != nil {
-			respStr, _ := io.ReadAll(response.Body)
-			response.Body.Close()
-			return fmt.Errorf("%s", respStr)
+		if response != nil {
+			// Extract detailed error information from the response
+			statusCode := response.StatusCode
+			statusText := response.Status
+
+			var respBodyStr string
+			if response.Body != nil {
+				respBytes, readErr := io.ReadAll(response.Body)
+				response.Body.Close()
+				if readErr == nil {
+					respBodyStr = strings.TrimSpace(string(respBytes))
+				}
+			}
+
+			// Create a clean error message
+			var errorMsg strings.Builder
+			errorMsg.WriteString(fmt.Sprintf("HTTP %d (%s)", statusCode, statusText))
+
+			if respBodyStr != "" {
+				errorMsg.WriteString(fmt.Sprintf(": %s", respBodyStr))
+			}
+
+			return fmt.Errorf("%s", errorMsg.String())
 		}
-		return fmt.Errorf("failed to connect to WebSocket: %w", err)
+
+		// Handle cases where response is nil (e.g., network errors, bad handshake)
+		var errorMsg strings.Builder
+		errorMsg.WriteString("Failed to connect to WebSocket")
+
+		// Analyze the error type and provide helpful context
+		errorStr := err.Error()
+		if strings.Contains(errorStr, "bad handshake") {
+			errorMsg.WriteString(" - WebSocket handshake failed")
+			errorMsg.WriteString("\nThis could be due to:")
+			errorMsg.WriteString("\n• Invalid server URL or endpoint")
+			errorMsg.WriteString("\n• Server not supporting WebSocket connections")
+			errorMsg.WriteString("\n• Network connectivity issues")
+			errorMsg.WriteString("\n• Authentication problems")
+		} else if strings.Contains(errorStr, "timeout") {
+			errorMsg.WriteString(" - Connection timeout")
+			errorMsg.WriteString("\nThe server may be overloaded or unreachable")
+		} else if strings.Contains(errorStr, "refused") {
+			errorMsg.WriteString(" - Connection refused")
+			errorMsg.WriteString("\nThe server may be down or the port may be blocked")
+		} else if strings.Contains(errorStr, "no such host") {
+			errorMsg.WriteString(" - DNS resolution failed")
+			errorMsg.WriteString("\nCheck the server hostname in your configuration")
+		}
+
+		errorMsg.WriteString(fmt.Sprintf("\nOriginal error: %v", err))
+
+		return fmt.Errorf("%s", errorMsg.String())
 	}
 	defer response.Body.Close()
 
