@@ -29,6 +29,7 @@ var (
 	replicaID          string
 	logger             *zap.Logger
 	showVersion        bool
+	vacuum             bool
 )
 
 var MAX_MESSAGE_SIZE = 4096
@@ -162,6 +163,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		DryRun:            dryRun,
 		Logger:            logger,
 		Verbose:           verbose,
+		Vacuum:            vacuum,
 	})
 
 	// Execute the operation
@@ -276,7 +278,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&SetPublic, "public", false, "Enable public access to the replica (initial PUSH only)")
 	rootCmd.Flags().BoolVar(&dryRun, "dry", false, "Perform a dry run without making changes")
 	rootCmd.Flags().BoolVarP(&showVersion, "version", "v", false, "Show version information")
-
+	rootCmd.Flags().BoolVar(&vacuum, "vacuum", false, "VACUUM database into temp file before PUSH (optimizes and compacts)")
 }
 
 func main() {
