@@ -407,6 +407,7 @@ type Config struct {
 	SendConfigCmd     bool // we don't have the version number or remote path
 	LocalHostname     string
 	LocalAbsolutePath string
+	WsID              string // Workspace ID for X-ClientID header
 
 	// Progress tracking
 	ProgressConfig   *ProgressConfig
@@ -685,6 +686,12 @@ func (c *Client) Connect() error {
 
 	headers.Set("Authorization", c.config.AuthToken)
 
+	if c.config.WsID != "" {
+		headers.Set("X-ClientID", c.config.WsID)
+	} else {
+		c.logger.Fatal("No wsID provided for X-ClientID header")
+	}
+
 	if c.config.LocalHostname != "" {
 		headers.Set("X-LocalHostname", c.config.LocalHostname)
 	}
@@ -707,7 +714,7 @@ func (c *Client) Connect() error {
 			// Extract detailed error information from the response
 			statusCode := response.StatusCode
 			statusText := response.Status
-			
+
 			var respBodyStr string
 			if response.Body != nil {
 				respBytes, readErr := io.ReadAll(response.Body)
@@ -716,22 +723,22 @@ func (c *Client) Connect() error {
 					respBodyStr = strings.TrimSpace(string(respBytes))
 				}
 			}
-			
+
 			// Create a clean error message
 			var errorMsg strings.Builder
 			errorMsg.WriteString(fmt.Sprintf("HTTP %d (%s)", statusCode, statusText))
-			
+
 			if respBodyStr != "" {
 				errorMsg.WriteString(fmt.Sprintf(": %s", respBodyStr))
 			}
-			
+
 			return fmt.Errorf("%s", errorMsg.String())
 		}
-		
+
 		// Handle cases where response is nil (e.g., network errors, bad handshake)
 		var errorMsg strings.Builder
 		errorMsg.WriteString("Failed to connect to WebSocket")
-		
+
 		// Analyze the error type and provide helpful context
 		errorStr := err.Error()
 		if strings.Contains(errorStr, "bad handshake") {
@@ -751,9 +758,9 @@ func (c *Client) Connect() error {
 			errorMsg.WriteString(" - DNS resolution failed")
 			errorMsg.WriteString("\nCheck the server hostname in your configuration")
 		}
-		
+
 		errorMsg.WriteString(fmt.Sprintf("\nOriginal error: %v", err))
-		
+
 		return fmt.Errorf("%s", errorMsg.String())
 	}
 	defer response.Body.Close()

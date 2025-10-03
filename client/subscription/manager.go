@@ -34,12 +34,13 @@ type Message struct {
 	Timestamp time.Time              `json:"timestamp"`
 }
 
-// Config holds subscription manager configuration
-type Config struct {
+// ManagerConfig holds subscription manager configuration
+type ManagerConfig struct {
 	ServerURL             string
 	ReplicaPath           string
 	AuthToken             string
 	ReplicaID             string
+	WsID                  string // websocket ID for client identification
 	Logger                *zap.Logger
 	MaxReconnectAttempts  int           // Maximum number of reconnect attempts (0 = infinite)
 	InitialReconnectDelay time.Duration // Initial delay before first reconnect
@@ -54,7 +55,7 @@ type Config struct {
 // MaxReconnectDelay is reached. Reconnection attempts continue indefinitely unless
 // MaxReconnectAttempts is set to a positive value.
 type Manager struct {
-	config    *Config
+	config    *ManagerConfig
 	logger    *zap.Logger
 	conn      *websocket.Conn
 	ctx       context.Context
@@ -73,7 +74,7 @@ type Manager struct {
 }
 
 // NewManager creates a new subscription manager
-func NewManager(config *Config) *Manager {
+func NewManager(config *ManagerConfig) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Set default reconnection parameters if not provided
@@ -202,6 +203,12 @@ func (m *Manager) doConnect() error {
 		headers.Set("X-ReplicaID", m.config.ReplicaID)
 	}
 
+	if m.config.WsID != "" {
+		headers.Set("X-ClientID", m.config.WsID)
+	} else {
+		m.logger.Fatal("No wsID provided for X-ClientID header")
+	}
+
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
 	}
@@ -214,7 +221,7 @@ func (m *Manager) doConnect() error {
 			// Extract detailed error information from the response
 			statusCode := response.StatusCode
 			statusText := response.Status
-			
+
 			var respBodyStr string
 			if response.Body != nil {
 				respBytes, readErr := io.ReadAll(response.Body)
@@ -223,22 +230,22 @@ func (m *Manager) doConnect() error {
 					respBodyStr = strings.TrimSpace(string(respBytes))
 				}
 			}
-			
+
 			// Create a clean error message
 			var errorMsg strings.Builder
 			errorMsg.WriteString(fmt.Sprintf("HTTP %d (%s)", statusCode, statusText))
-			
+
 			if respBodyStr != "" {
 				errorMsg.WriteString(fmt.Sprintf(": %s", respBodyStr))
 			}
-			
+
 			return fmt.Errorf("%s", errorMsg.String())
 		}
-		
+
 		// Handle cases where response is nil (e.g., network errors, bad handshake)
 		var errorMsg strings.Builder
 		errorMsg.WriteString("Failed to connect to subscription service")
-		
+
 		// Analyze the error type and provide helpful context
 		errorStr := err.Error()
 		if strings.Contains(errorStr, "bad handshake") {
@@ -258,9 +265,9 @@ func (m *Manager) doConnect() error {
 			errorMsg.WriteString(" - DNS resolution failed")
 			errorMsg.WriteString("\nCheck the server hostname in your configuration")
 		}
-		
+
 		errorMsg.WriteString(fmt.Sprintf("\nOriginal error: %v", err))
-		
+
 		return fmt.Errorf("%s", errorMsg.String())
 	}
 
