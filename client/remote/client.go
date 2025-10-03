@@ -22,6 +22,7 @@ const (
 	SQLRSYNC_NEWREPLICAVERSION = 0x52 // New version available
 	SQLRSYNC_KEYREQUEST        = 0x53 // request keys
 	SQLRSYNC_COMMITMESSAGE     = 0x54 // commit message
+	SQLRSYNC_CHANGED           = 0x57 // Write detected notification with duration
 )
 
 // ProgressPhase represents the current phase of the sync operation
@@ -454,7 +455,13 @@ type Client struct {
 	Version        string
 	ReplicaPath    string
 	SetVisibility  int
+	KeyType        string // "PUSH" or "PULL" - indicates the type of key being used
 	newVersionChan chan struct{}
+
+	// Version conflict tracking
+	versionConflict bool
+	latestVersion   string
+	versionMu       sync.RWMutex
 
 	// Progress tracking
 	progress         *SyncProgress
@@ -690,11 +697,7 @@ func (c *Client) Connect() error {
 
 	headers.Set("X-ClientVersion", c.config.ClientVersion)
 
-	if c.config.WsID != "" {
-		headers.Set("X-ClientID", c.config.WsID)
-	} else {
-		c.logger.Fatal("No wsID provided for X-ClientID header")
-	}
+	headers.Set("X-ClientID", c.config.WsID)
 
 	if c.config.LocalHostname != "" {
 		headers.Set("X-LocalHostname", c.config.LocalHostname)
@@ -1300,94 +1303,153 @@ func (c *Client) readLoop() {
 				select {
 				case c.reconnectChan <- struct{}{}:
 				default:
+					if messageType == websocket.TextMessage {
+						configMsgResp := "CONFIG="
+						messageResp := "MESSAGE="
+						abortResp := "ABORT="
+						// Handle text messages for NEWPULLKEY, NEWPUSHKEY, REPLICAID
+						// Example: "NEWPULLKEY=xxxxxxxxxxxxxxxxxxxxxx"
+						strData := string(data)
+
+						if len(data) >= len(abortResp) && strings.HasPrefix(strData, abortResp) {
+							message := strData[len(abortResp):]
+
+							// Check if this is a version conflict error
+							// Format: "VERSION_CONFLICT:versionNumber"
+							if strings.HasPrefix(message, "VERSION_CONFLICT:") {
+								latestVer := strings.TrimPrefix(message, "VERSION_CONFLICT:")
+								c.versionMu.Lock()
+								c.versionConflict = true
+								c.latestVersion = latestVer
+								c.versionMu.Unlock()
+
+								color.Yellow("⚠️  Version conflict: Server has newer version %s", latestVer)
+								c.setError(fmt.Errorf("version conflict: server has version %s", latestVer))
+							} else {
+								color.Red("❌ Server aborted connection: %s", message)
+								c.setError(fmt.Errorf("server aborted connection: %s", message))
+							}
+							c.setConnected(false)
+						} else if (len(data) >= len(configMsgResp)) && strings.HasPrefix(strData, configMsgResp) {
+							// CONFIG={JSON}
+							jsonStr := strData[len(configMsgResp):]
+							var configMsg map[string]interface{}
+							err := json.Unmarshal([]byte(jsonStr), &configMsg)
+							if err != nil {
+								c.logger.Error("Failed to parse CONFIG JSON", zap.Error(err))
+								continue
+							}
+							if configMsg["newPullKey"] != nil {
+								c.NewPullKey = configMsg["newPullKey"].(string)
+							}
+							if configMsg["newPushKey"] != nil {
+								c.NewPushKey = configMsg["newPushKey"].(string)
+							}
+							if configMsg["replicaID"] != nil {
+								c.ReplicaID = configMsg["replicaID"].(string)
+							}
+							if configMsg["replicaPath"] != nil {
+								c.ReplicaPath = configMsg["replicaPath"].(string)
+							}
+							if configMsg["committedVersionID"] != nil {
+								c.Version = configMsg["committedVersionID"].(string)
+							}
+							if configMsg["keyType"] != nil {
+								c.KeyType = configMsg["keyType"].(string)
+								c.logger.Info("Received key type from server", zap.String("keyType", c.KeyType))
+							}
+						} else if (len(data) >= len(messageResp)) && strings.HasPrefix(strData, messageResp) {
+							fmt.Println(strData[len(messageResp):])
+						}
+					}
+					return
 				}
-			}
-			return
-		}
 
-		if messageType == websocket.TextMessage {
-			configMsgResp := "CONFIG="
-			messageResp := "MESSAGE="
-			abortResp := "ABORT="
-			// Handle text messages for NEWPULLKEY, NEWPUSHKEY, REPLICAID
-			// Example: "NEWPULLKEY=xxxxxxxxxxxxxxxxxxxxxx"
-			strData := string(data)
+				if messageType == websocket.TextMessage {
+					configMsgResp := "CONFIG="
+					messageResp := "MESSAGE="
+					abortResp := "ABORT="
+					// Handle text messages for NEWPULLKEY, NEWPUSHKEY, REPLICAID
+					// Example: "NEWPULLKEY=xxxxxxxxxxxxxxxxxxxxxx"
+					strData := string(data)
 
-			if len(data) >= len(abortResp) && strings.HasPrefix(strData, abortResp) {
-				color.Red("❌ Server aborted connection: %s", strData[len(abortResp):])
-				c.setConnected(false)
-				message := strData[len(abortResp):]
-				c.setError(fmt.Errorf("server aborted connection: %s", message))
-			} else if (len(data) >= len(configMsgResp)) && strings.HasPrefix(strData, configMsgResp) {
-				// CONFIG={JSON}
-				jsonStr := strData[len(configMsgResp):]
-				var configMsg map[string]interface{}
-				err := json.Unmarshal([]byte(jsonStr), &configMsg)
-				if err != nil {
-					c.logger.Error("Failed to parse CONFIG JSON", zap.Error(err))
+					if len(data) >= len(abortResp) && strings.HasPrefix(strData, abortResp) {
+						color.Red("❌ Server aborted connection: %s", strData[len(abortResp):])
+						c.setConnected(false)
+						message := strData[len(abortResp):]
+						c.setError(fmt.Errorf("server aborted connection: %s", message))
+					} else if (len(data) >= len(configMsgResp)) && strings.HasPrefix(strData, configMsgResp) {
+						// CONFIG={JSON}
+						jsonStr := strData[len(configMsgResp):]
+						var configMsg map[string]interface{}
+						err := json.Unmarshal([]byte(jsonStr), &configMsg)
+						if err != nil {
+							c.logger.Error("Failed to parse CONFIG JSON", zap.Error(err))
+							continue
+						}
+						if configMsg["newPullKey"] != nil {
+							c.NewPullKey = configMsg["newPullKey"].(string)
+						}
+						if configMsg["newPushKey"] != nil {
+							c.NewPushKey = configMsg["newPushKey"].(string)
+						}
+						if configMsg["replicaID"] != nil {
+							c.ReplicaID = configMsg["replicaID"].(string)
+						}
+						if configMsg["replicaPath"] != nil {
+							c.ReplicaPath = configMsg["replicaPath"].(string)
+						}
+						if configMsg["committedVersionID"] != nil {
+							c.Version = configMsg["committedVersionID"].(string)
+						}
+					} else if (len(data) >= len(messageResp)) && strings.HasPrefix(strData, messageResp) {
+						fmt.Println(strData[len(messageResp):])
+					}
 					continue
 				}
-				if configMsg["newPullKey"] != nil {
-					c.NewPullKey = configMsg["newPullKey"].(string)
+
+				if messageType != websocket.BinaryMessage {
+					c.logger.Warn("Received non-binary message", zap.Int("messageType", messageType))
+					continue
 				}
-				if configMsg["newPushKey"] != nil {
-					c.NewPushKey = configMsg["newPushKey"].(string)
+
+				c.logger.Debug("Received message from remote", zap.Int("bytes", len(data)))
+
+				c.inspector.LogWebSocketTraffic(data, "IN (Server → Client)", c.config.EnableTrafficInspection)
+
+				// Check if this is ORIGIN_END to detect sync completion early
+				msgType := c.inspector.parseMessageType(data)
+				if msgType == "ORIGIN_END" {
+					c.logger.Info("ORIGIN_END detected in read loop - sync will complete")
+					// Don't mark as completed yet - let the C code process all remaining data first
+					// The Read method will mark it as completed when it actually receives ORIGIN_END
+				} else if msgType == "SQLRSYNC_NEWREPLICAVERSION" && c.config.Subscribe {
+					// Handle new version notification in subscribe mode
+					c.logger.Info("SQLRSYNC_NEWREPLICAVERSION (0x52) received - new version available!")
+					select {
+					case c.newVersionChan <- struct{}{}:
+						c.logger.Debug("New version notification sent to channel")
+					default:
+						c.logger.Debug("New version channel already has pending notification")
+					}
+					// Don't queue this message for normal reading
+					continue
 				}
-				if configMsg["replicaID"] != nil {
-					c.ReplicaID = configMsg["replicaID"].(string)
+
+				// Handle progress tracking in read loop
+				if c.config.ProgressCallback != nil {
+					c.inspector.InspectForProgress(data, "IN (Server → Client)", func(event SyncProgressEvent) {
+						c.handleProgressEvent(event)
+					}, c.config.EnableTrafficInspection)
 				}
-				if configMsg["replicaPath"] != nil {
-					c.ReplicaPath = configMsg["replicaPath"].(string)
+				// Queue the data for reading
+				select {
+				case c.readQueue <- data:
+					c.logger.Debug("Data queued for reading", zap.Int("bytes", len(data)))
+				case <-c.ctx.Done():
+					return
 				}
-				if configMsg["committedVersionID"] != nil {
-					c.Version = configMsg["committedVersionID"].(string)
-				}
-			} else if (len(data) >= len(messageResp)) && strings.HasPrefix(strData, messageResp) {
-				fmt.Println(strData[len(messageResp):])
 			}
-			continue
-		}
-
-		if messageType != websocket.BinaryMessage {
-			c.logger.Warn("Received non-binary message", zap.Int("messageType", messageType))
-			continue
-		}
-
-		c.logger.Debug("Received message from remote", zap.Int("bytes", len(data)))
-
-		c.inspector.LogWebSocketTraffic(data, "IN (Server → Client)", c.config.EnableTrafficInspection)
-
-		// Check if this is ORIGIN_END to detect sync completion early
-		msgType := c.inspector.parseMessageType(data)
-		if msgType == "ORIGIN_END" {
-			c.logger.Info("ORIGIN_END detected in read loop - sync will complete")
-			// Don't mark as completed yet - let the C code process all remaining data first
-			// The Read method will mark it as completed when it actually receives ORIGIN_END
-		} else if msgType == "SQLRSYNC_NEWREPLICAVERSION" && c.config.Subscribe {
-			// Handle new version notification in subscribe mode
-			c.logger.Info("SQLRSYNC_NEWREPLICAVERSION (0x52) received - new version available!")
-			select {
-			case c.newVersionChan <- struct{}{}:
-				c.logger.Debug("New version notification sent to channel")
-			default:
-				c.logger.Debug("New version channel already has pending notification")
-			}
-			// Don't queue this message for normal reading
-			continue
-		}
-
-		// Handle progress tracking in read loop
-		if c.config.ProgressCallback != nil {
-			c.inspector.InspectForProgress(data, "IN (Server → Client)", func(event SyncProgressEvent) {
-				c.handleProgressEvent(event)
-			}, c.config.EnableTrafficInspection)
-		}
-		// Queue the data for reading
-		select {
-		case c.readQueue <- data:
-			c.logger.Debug("Data queued for reading", zap.Int("bytes", len(data)))
-		case <-c.ctx.Done():
-			return
 		}
 	}
 }
@@ -1427,7 +1489,7 @@ func (c *Client) writeLoop() {
 			// Inspect raw WebSocket outbound traffic
 			c.inspector.LogWebSocketTraffic(data, "OUT (Client → Server)", c.config.EnableTrafficInspection)
 
-			// For a PULL with no existing data we need to send this before writes, however I imagine this needs 
+			// For a PULL with no existing data we need to send this before writes, however I imagine this needs
 			// to go after ORIGIN_BEGIN for a PUSH with existing data.
 			if c.config.SendConfigCmd {
 				conn.WriteMessage(websocket.BinaryMessage, []byte{SQLRSYNC_CONFIG})
@@ -1452,7 +1514,6 @@ func (c *Client) writeLoop() {
 				return
 			}
 
-
 			c.logger.Debug("Sent message to remote", zap.Int("bytes", len(data)))
 		}
 	}
@@ -1466,6 +1527,29 @@ func (c *Client) GetNewPushKey() string {
 	return c.NewPushKey
 }
 
+// SendChangedNotification sends SQLRSYNC_CHANGED message with duration until push
+func (c *Client) SendChangedNotification(durationSeconds uint32) error {
+	// Message format: [0x57][duration: 4 bytes as seconds]
+	msg := make([]byte, 5)
+	msg[0] = SQLRSYNC_CHANGED
+
+	// Duration in seconds (4 bytes, little-endian)
+	msg[1] = byte(durationSeconds)
+	msg[2] = byte(durationSeconds >> 8)
+	msg[3] = byte(durationSeconds >> 16)
+	msg[4] = byte(durationSeconds >> 24)
+
+	// Send via write queue
+	select {
+	case c.writeQueue <- msg:
+		c.logger.Debug("Sent SQLRSYNC_CHANGED notification",
+			zap.Uint32("durationSeconds", durationSeconds))
+		return nil
+	default:
+		return fmt.Errorf("write queue full")
+	}
+}
+
 func (c *Client) GetReplicaID() string {
 	return c.ReplicaID
 }
@@ -1474,6 +1558,31 @@ func (c *Client) GetReplicaPath() string {
 }
 func (c *Client) GetVersion() string {
 	return c.Version
+}
+func (c *Client) GetKeyType() string {
+	return c.KeyType
+}
+
+// HasVersionConflict returns true if a version conflict was detected
+func (c *Client) HasVersionConflict() bool {
+	c.versionMu.RLock()
+	defer c.versionMu.RUnlock()
+	return c.versionConflict
+}
+
+// GetLatestVersion returns the latest version from server (if version conflict occurred)
+func (c *Client) GetLatestVersion() string {
+	c.versionMu.RLock()
+	defer c.versionMu.RUnlock()
+	return c.latestVersion
+}
+
+// ResetVersionConflict clears the version conflict flag
+func (c *Client) ResetVersionConflict() {
+	c.versionMu.Lock()
+	defer c.versionMu.Unlock()
+	c.versionConflict = false
+	c.latestVersion = ""
 }
 
 // WaitForNewVersion blocks until a new version notification is received (0x52)
