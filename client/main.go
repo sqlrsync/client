@@ -145,6 +145,13 @@ func runSync(cmd *cobra.Command, args []string) error {
 		visibility = 1
 	}
 
+	// Get workspace ID for client identification
+	wsID, err := GetWsID()
+	if err != nil {
+		logger.Warn("Failed to get workspace ID", zap.Error(err))
+		wsID = "" // Continue with empty wsID
+	}
+
 	// Create sync coordinator
 	coordinator := sync.NewCoordinator(&sync.CoordinatorConfig{
 		ServerURL:         serverURL,
@@ -162,6 +169,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		DryRun:            dryRun,
 		Logger:            logger,
 		Verbose:           verbose,
+		WsID:              wsID, // Add workspace ID
 	})
 
 	// Execute the operation

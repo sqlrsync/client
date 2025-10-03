@@ -46,6 +46,7 @@ type CoordinatorConfig struct {
 	DryRun            bool
 	Logger            *zap.Logger
 	Verbose           bool
+	WsID              string // Workspace ID for client identification
 }
 
 // Coordinator manages sync operations and subscriptions
@@ -240,11 +241,12 @@ func (c *Coordinator) executeSubscribe() error {
 	}
 
 	// Create subscription manager with reconnection configuration
-	c.subManager = subscription.NewManager(&subscription.Config{
+	c.subManager = subscription.NewManager(&subscription.ManagerConfig{
 		ServerURL:             authResult.ServerURL,
 		ReplicaPath:           authResult.RemotePath,
 		AuthToken:             authResult.AccessToken,
 		ReplicaID:             authResult.ReplicaID,
+		WsID:                  c.config.WsID,
 		Logger:                c.logger.Named("subscription"),
 		MaxReconnectAttempts:  20,              // Infinite reconnect attempts
 		InitialReconnectDelay: 5 * time.Second, // Start with 5 seconds delay
@@ -373,6 +375,7 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 		Version:                 version,
 		SendConfigCmd:           true,
 		SendKeyRequest:          c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath),
+		WsID:                    c.config.WsID, // Add websocket ID
 		//ProgressCallback:        remote.DefaultProgressCallback(remote.FormatSimple),
 		ProgressCallback: nil,
 		ProgressConfig: &remote.ProgressConfig{
@@ -499,7 +502,8 @@ func (c *Coordinator) executePush() error {
 		SendConfigCmd:           true,
 		SetVisibility:           c.config.SetVisibility,
 		CommitMessage:           c.config.CommitMessage,
-		ProgressCallback:        nil, //remote.DefaultProgressCallback(remote.FormatSimple),
+		WsID:                    c.config.WsID, // Add websocket ID
+		ProgressCallback:        nil,           //remote.DefaultProgressCallback(remote.FormatSimple),
 		ProgressConfig: &remote.ProgressConfig{
 			Enabled:        true,
 			Format:         remote.FormatSimple,
