@@ -41,6 +41,7 @@ type ManagerConfig struct {
 	AuthToken             string
 	ReplicaID             string
 	WsID                  string // websocket ID for client identification
+	ClientVersion         string // version of the client software
 	Logger                *zap.Logger
 	MaxReconnectAttempts  int           // Maximum number of reconnect attempts (0 = infinite)
 	InitialReconnectDelay time.Duration // Initial delay before first reconnect
@@ -203,11 +204,8 @@ func (m *Manager) doConnect() error {
 		headers.Set("X-ReplicaID", m.config.ReplicaID)
 	}
 
-	if m.config.WsID != "" {
-		headers.Set("X-ClientID", m.config.WsID)
-	} else {
-		m.logger.Fatal("No wsID provided for X-ClientID header")
-	}
+	headers.Set("X-ClientVersion", m.config.ClientVersion)
+	headers.Set("X-ClientID", m.config.WsID)
 
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
