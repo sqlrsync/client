@@ -699,6 +699,8 @@ func (c *Client) Connect() error {
 
 	headers.Set("X-ClientID", c.config.WsID)
 
+	headers.Set("X-ClientVersion", c.config.ClientVersion)
+
 	if c.config.WsID != "" {
 		headers.Set("X-ClientID", c.config.WsID)
 	} else {
