@@ -29,6 +29,10 @@ var (
 	replicaID          string
 	logger             *zap.Logger
 	showVersion        bool
+	waitIdle           string
+	maxInterval        string
+	minInterval        string
+	autoMerge          bool
 )
 
 var MAX_MESSAGE_SIZE = 4096
@@ -40,14 +44,28 @@ var rootCmd = &cobra.Command{
 A web-enabled rsync-like utility for SQLite databases with subscription support.
 
 Usage modes:
-1. Push to server:         sqlrsync LOCAL [REMOTE] [OPTIONS]
-2. Pull from server:       sqlrsync REMOTE [LOCAL] [OPTIONS]
-3. Pull with subscription: sqlrsync REMOTE [LOCAL] --subscribe [OPTIONS]
-4. Local to local sync:    sqlrsync LOCAL1 LOCAL2 [OPTIONS]
+1. PUSH to server:                     sqlrsync LOCAL [REMOTE] [OPTIONS]
+2. PUSH when LOCAL changes:            sqlrsync LOCAL [REMOTE] --subscribe [OPTIONS]
+3. PULL from server:                   sqlrsync REMOTE [LOCAL] [OPTIONS]
+4. PULL when server gets new version:  sqlrsync REMOTE [LOCAL] --subscribe [OPTIONS]
+5. LOCAL to local sync:                sqlrsync LOCAL1 LOCAL2 [OPTIONS]
 
 Where:
-- REMOTE is a path like namespace/db.sqlite (remote server)
-- LOCAL is a local file path like ./db.sqlite or db.sqlite (local file)
+- REMOTE is a path like oregon/elections.db (remote server)
+- LOCAL is a local file path like ./forex.db or history.sqlite (local files)
+
+Public and Unlisted Replicas do not require authentication to PULL.
+
+Private Replicas will interactively prompt for an authentication token on the
+first synchronization.  After successfully synchronizing, the server creates
+new keys to enable pulls (and pushes if the operation was PUSH) so that future
+operations do not require interactive authentication.  The pull key is
+stored adjascent to the local database file in a "-sqlrsync" file. The push key
+is stored in ~/.config/sqlrsync/.  Keys can be rotated and deleted from the
+https://sqlrsync.com website.
+
+In other words: 'sqlrsync LOCAL' will redo the last REMOTE operation on that LOCAL
+and will not require any further authentication.
 
 Limitations:
 - Pushing to the server requires page size of 4096 (default for SQLite).
@@ -162,6 +180,11 @@ func runSync(cmd *cobra.Command, args []string) error {
 		DryRun:            dryRun,
 		Logger:            logger,
 		Verbose:           verbose,
+		Subscribing:       subscribing,
+		WaitIdle:          waitIdle,
+		MaxInterval:       maxInterval,
+		MinInterval:       minInterval,
+		AutoMerge:         autoMerge,
 	})
 
 	// Execute the operation
@@ -196,7 +219,10 @@ func determineOperation(args []string) (sync.Operation, string, string, error) {
 		replicaLocal := isLocal(replica)
 
 		if originLocal && !replicaLocal {
-			// LOCAL REMOTE -> push
+			// LOCAL REMOTE -> push (or push subscribe if --subscribe is used)
+			if subscribing {
+				return sync.OperationPushSubscribe, origin, replica, nil
+			}
 			return sync.OperationPush, origin, replica, nil
 		} else if !originLocal && replicaLocal {
 			// REMOTE LOCAL -> pull (or subscribe)
@@ -270,12 +296,16 @@ func init() {
 	rootCmd.Flags().StringVarP(&commitMessageParam, "message", "m", "", "Commit message for the PUSH operation")
 	rootCmd.Flags().StringVar(&replicaID, "replicaID", "", "Replica ID for the remote database")
 	rootCmd.Flags().StringVarP(&serverURL, "server", "s", "wss://sqlrsync.com", "Server URL for remote operations")
-	rootCmd.Flags().BoolVar(&subscribing, "subscribe", false, "Enable subscription to PULL changes")
+	rootCmd.Flags().BoolVar(&subscribing, "subscribe", false, "Long-running automated PUSH and PULL based on local activity and server notifications")
 	rootCmd.Flags().BoolVar(&verbose, "verbose", false, "Enable verbose logging")
 	rootCmd.Flags().BoolVar(&SetUnlisted, "unlisted", false, "Enable unlisted access to the replica (initial PUSH only)")
 	rootCmd.Flags().BoolVar(&SetPublic, "public", false, "Enable public access to the replica (initial PUSH only)")
 	rootCmd.Flags().BoolVar(&dryRun, "dry", false, "Perform a dry run without making changes")
 	rootCmd.Flags().BoolVarP(&showVersion, "version", "v", false, "Show version information")
+	rootCmd.Flags().StringVar(&waitIdle, "waitIdle", "", "Time to wait for idleness before pushing (e.g., 10m, 1h30m, 3d)")
+	rootCmd.Flags().StringVar(&maxInterval, "maxInterval", "", "Maximum time between pushes regardless of activity (e.g., 24h, 1w)")
+	rootCmd.Flags().StringVar(&minInterval, "minInterval", "", "Minimum time between subsequent pushes (defaults to 1/2 maxInterval)")
+	rootCmd.Flags().BoolVar(&autoMerge, "merge", false, "Automatically merge changes when server has newer version")
 
 }
 

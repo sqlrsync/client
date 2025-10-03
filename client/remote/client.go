@@ -22,6 +22,7 @@ const (
 	SQLRSYNC_NEWREPLICAVERSION = 0x52 // New version available
 	SQLRSYNC_KEYREQUEST        = 0x53 // request keys
 	SQLRSYNC_COMMITMESSAGE     = 0x54 // commit message
+	SQLRSYNC_CHANGED           = 0x57 // Write detected notification with duration
 )
 
 // ProgressPhase represents the current phase of the sync operation
@@ -452,7 +453,13 @@ type Client struct {
 	Version        string
 	ReplicaPath    string
 	SetVisibility  int
+	KeyType        string // "PUSH" or "PULL" - indicates the type of key being used
 	newVersionChan chan struct{}
+
+	// Version conflict tracking
+	versionConflict bool
+	latestVersion   string
+	versionMu       sync.RWMutex
 
 	// Progress tracking
 	progress         *SyncProgress
@@ -684,6 +691,15 @@ func (c *Client) Connect() error {
 	headers := http.Header{}
 
 	headers.Set("Authorization", c.config.AuthToken)
+	headers.Set("Sec-WebSocket-Extensions", "permessage-deflate")
+
+	// Set X-ClientID to the wsID from defaults config
+	if wsID, err := config.GetWsID(); err != nil {
+		c.logger.Warn("Failed to get wsID for X-ClientID header", zap.Error(err))
+		headers.Set("X-ClientID", "")
+	} else {
+		headers.Set("X-ClientID", wsID)
+	}
 
 	if c.config.LocalHostname != "" {
 		headers.Set("X-LocalHostname", c.config.LocalHostname)
@@ -1260,10 +1276,24 @@ func (c *Client) readLoop() {
 				strData := string(data)
 
 				if len(data) >= len(abortResp) && strings.HasPrefix(strData, abortResp) {
-					color.Red("❌ Server aborted connection: %s", strData[len(abortResp):])
-					c.setConnected(false)
 					message := strData[len(abortResp):]
-					c.setError(fmt.Errorf("server aborted connection: %s", message))
+
+					// Check if this is a version conflict error
+					// Format: "VERSION_CONFLICT:versionNumber"
+					if strings.HasPrefix(message, "VERSION_CONFLICT:") {
+						latestVer := strings.TrimPrefix(message, "VERSION_CONFLICT:")
+						c.versionMu.Lock()
+						c.versionConflict = true
+						c.latestVersion = latestVer
+						c.versionMu.Unlock()
+
+						color.Yellow("⚠️  Version conflict: Server has newer version %s", latestVer)
+						c.setError(fmt.Errorf("version conflict: server has version %s", latestVer))
+					} else {
+						color.Red("❌ Server aborted connection: %s", message)
+						c.setError(fmt.Errorf("server aborted connection: %s", message))
+					}
+					c.setConnected(false)
 				} else if (len(data) >= len(configMsgResp)) && strings.HasPrefix(strData, configMsgResp) {
 					// CONFIG={JSON}
 					jsonStr := strData[len(configMsgResp):]
@@ -1287,6 +1317,10 @@ func (c *Client) readLoop() {
 					}
 					if configMsg["committedVersionID"] != nil {
 						c.Version = configMsg["committedVersionID"].(string)
+					}
+					if configMsg["keyType"] != nil {
+						c.KeyType = configMsg["keyType"].(string)
+						c.logger.Info("Received key type from server", zap.String("keyType", c.KeyType))
 					}
 				} else if (len(data) >= len(messageResp)) && strings.HasPrefix(strData, messageResp) {
 					fmt.Println(strData[len(messageResp):])
@@ -1413,6 +1447,29 @@ func (c *Client) GetNewPushKey() string {
 	return c.NewPushKey
 }
 
+// SendChangedNotification sends SQLRSYNC_CHANGED message with duration until push
+func (c *Client) SendChangedNotification(durationSeconds uint32) error {
+	// Message format: [0x57][duration: 4 bytes as seconds]
+	msg := make([]byte, 5)
+	msg[0] = SQLRSYNC_CHANGED
+
+	// Duration in seconds (4 bytes, little-endian)
+	msg[1] = byte(durationSeconds)
+	msg[2] = byte(durationSeconds >> 8)
+	msg[3] = byte(durationSeconds >> 16)
+	msg[4] = byte(durationSeconds >> 24)
+
+	// Send via write queue
+	select {
+	case c.writeQueue <- msg:
+		c.logger.Debug("Sent SQLRSYNC_CHANGED notification",
+			zap.Uint32("durationSeconds", durationSeconds))
+		return nil
+	default:
+		return fmt.Errorf("write queue full")
+	}
+}
+
 func (c *Client) GetReplicaID() string {
 	return c.ReplicaID
 }
@@ -1421,6 +1478,31 @@ func (c *Client) GetReplicaPath() string {
 }
 func (c *Client) GetVersion() string {
 	return c.Version
+}
+func (c *Client) GetKeyType() string {
+	return c.KeyType
+}
+
+// HasVersionConflict returns true if a version conflict was detected
+func (c *Client) HasVersionConflict() bool {
+	c.versionMu.RLock()
+	defer c.versionMu.RUnlock()
+	return c.versionConflict
+}
+
+// GetLatestVersion returns the latest version from server (if version conflict occurred)
+func (c *Client) GetLatestVersion() string {
+	c.versionMu.RLock()
+	defer c.versionMu.RUnlock()
+	return c.latestVersion
+}
+
+// ResetVersionConflict clears the version conflict flag
+func (c *Client) ResetVersionConflict() {
+	c.versionMu.Lock()
+	defer c.versionMu.Unlock()
+	c.versionConflict = false
+	c.latestVersion = ""
 }
 
 // WaitForNewVersion blocks until a new version notification is received (0x52)
