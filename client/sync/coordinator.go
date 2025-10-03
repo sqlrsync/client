@@ -27,6 +27,7 @@ const (
 	OperationPull Operation = iota
 	OperationPush
 	OperationPullSubscribe
+	OperationSubscribe
 	OperationPushSubscribe
 	OperationLocalSync
 )

@@ -694,21 +694,13 @@ func (c *Client) Connect() error {
 
 	headers := http.Header{}
 
+	headers.Set("X-ClientVersion", c.config.ClientVersion)
+
 	headers.Set("Authorization", c.config.AuthKey)
 
-	headers.Set("X-ClientVersion", c.config.ClientVersion)
-
-	headers.Set("X-ClientID", c.config.WsID)
-
-	headers.Set("X-ClientVersion", c.config.ClientVersion)
-
-	headers.Set("X-ClientVersion", c.config.ClientVersion)
-
-	if c.config.WsID != "" {
-		headers.Set("X-ClientID", c.config.WsID)
-	} else {
-		c.logger.Fatal("No wsID provided for X-ClientID header")
-	}
+	// Set X-ClientID to the wsID from defaults config
+	wsID := c.config.WsID
+	headers.Set("X-ClientID", wsID)
 
 	if c.config.LocalHostname != "" {
 		headers.Set("X-LocalHostname", c.config.LocalHostname)
@@ -1461,22 +1453,6 @@ func (c *Client) readLoop() {
 					return
 				}
 			}
-			// Don't queue this message for normal reading
-			continue
-		}
-
-		// Handle progress tracking in read loop
-		if c.config.ProgressCallback != nil {
-			c.inspector.InspectForProgress(data, "IN (Server → Client)", func(event SyncProgressEvent) {
-				c.handleProgressEvent(event)
-			}, c.config.EnableTrafficInspection)
-		}
-		// Queue the data for reading
-		select {
-		case c.readQueue <- data:
-			c.logger.Debug("Data queued for reading", zap.Int("bytes", len(data)))
-		case <-c.ctx.Done():
-			return
 		}
 	}
 }
