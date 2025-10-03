@@ -194,7 +194,8 @@ func runSync(cmd *cobra.Command, args []string) error {
 		MaxInterval:       maxInterval,
 		MinInterval:       minInterval,
 		AutoMerge:         autoMerge,
-		WsID:              wsID, // Add workspace ID
+		WsID:              wsID, // Add websocket ID
+		ClientVersion:     VERSION,
 	})
 
 	// Execute the operation
