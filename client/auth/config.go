@@ -15,6 +15,7 @@ import (
 type DefaultsConfig struct {
 	Defaults struct {
 		Server string `toml:"server"`
+		WsID   string `toml:"wsID"`
 	} `toml:"defaults"`
 }
 
