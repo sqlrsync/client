@@ -697,18 +697,11 @@ func (c *Client) Connect() error {
 	headers.Set("X-ClientVersion", c.config.ClientVersion)
 
 	headers.Set("Authorization", c.config.AuthKey)
+	headers.Set("Sec-WebSocket-Extensions", "permessage-deflate")
 
 	// Set X-ClientID to the wsID from defaults config
 	wsID := c.config.WsID
 	headers.Set("X-ClientID", wsID)
-
-	headers.Set("X-ClientVersion", c.config.ClientVersion)
-
-	if c.config.WsID != "" {
-		headers.Set("X-ClientID", c.config.WsID)
-	} else {
-		c.logger.Fatal("No wsID provided for X-ClientID header")
-	}
 
 	if c.config.LocalHostname != "" {
 		headers.Set("X-LocalHostname", c.config.LocalHostname)
