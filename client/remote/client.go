@@ -710,14 +710,6 @@ func (c *Client) Connect() error {
 		c.logger.Fatal("No wsID provided for X-ClientID header")
 	}
 
-	headers.Set("X-ClientVersion", c.config.ClientVersion)
-
-	if c.config.WsID != "" {
-		headers.Set("X-ClientID", c.config.WsID)
-	} else {
-		c.logger.Fatal("No wsID provided for X-ClientID header")
-	}
-
 	if c.config.LocalHostname != "" {
 		headers.Set("X-LocalHostname", c.config.LocalHostname)
 	}
