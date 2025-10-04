@@ -22,14 +22,14 @@ type ResolveResult struct {
 
 // ResolveRequest contains the parameters for authentication resolution
 type ResolveRequest struct {
-	LocalPath        string
-	RemotePath       string
-	ServerURL        string
-	ProvidedPullKey  string
-	ProvidedPushKey  string
+	LocalPath         string
+	RemotePath        string
+	ServerURL         string
+	ProvidedPullKey   string
+	ProvidedPushKey   string
 	ProvidedReplicaID string
-	Operation        string // "pull", "push", "subscribe"
-	Logger           *zap.Logger
+	Operation         string // "pull", "push", "subscribe"
+	Logger            *zap.Logger
 }
 
 // Resolver handles authentication and configuration resolution
@@ -87,7 +87,7 @@ func (r *Resolver) Resolve(req *ResolveRequest) (*ResolveResult, error) {
 		if req.ServerURL == "wss://sqlrsync.com" {
 			if localSecretsConfig, err := LoadLocalSecretsConfig(); err == nil {
 				if dbConfig := localSecretsConfig.FindDatabaseByPath(absLocalPath); dbConfig != nil {
-					r.logger.Debug("Using server URL from local secrets config", 
+					r.logger.Debug("Using server URL from local secrets config",
 						zap.String("configuredServer", dbConfig.Server),
 						zap.String("defaultServer", req.ServerURL))
 					result.ServerURL = dbConfig.Server
@@ -138,7 +138,7 @@ func (r *Resolver) Resolve(req *ResolveRequest) (*ResolveResult, error) {
 // resolveFromLocalSecrets attempts to resolve auth from local-secrets.toml
 func (r *Resolver) resolveFromLocalSecrets(absLocalPath, serverURL string, result *ResolveResult) (*ResolveResult, error) {
 	r.logger.Debug("Attempting to resolve from local secrets", zap.String("absLocalPath", absLocalPath), zap.String("serverURL", serverURL))
-	
+
 	localSecretsConfig, err := LoadLocalSecretsConfig()
 	if err != nil {
 		r.logger.Debug("Failed to load local secrets config", zap.Error(err))
@@ -162,8 +162,8 @@ func (r *Resolver) resolveFromLocalSecrets(absLocalPath, serverURL string, resul
 	}
 
 	if dbConfig.Server != serverURL {
-		r.logger.Debug("Server URL mismatch", 
-			zap.String("configured", dbConfig.Server), 
+		r.logger.Debug("Server URL mismatch",
+			zap.String("configured", dbConfig.Server),
 			zap.String("requested", serverURL))
 		return nil, fmt.Errorf("server URL mismatch: configured=%s, requested=%s", dbConfig.Server, serverURL)
 	}
