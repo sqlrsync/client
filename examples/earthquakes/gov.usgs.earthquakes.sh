@@ -53,26 +53,14 @@ sync_data() {
         local count_before=$(sqlite3 "$FILE" "SELECT COUNT(*) FROM $TABLE;" 2>/dev/null || echo "0")
         
         # Use in-memory database for staging to avoid bloating main database
-        sqlite3 "$FILE" <<EOF
--- Attach in-memory database for staging
-ATTACH DATABASE ':memory:' AS staging;
-
--- Create staging table in memory with same schema
-CREATE TABLE staging.$TABLE ($SCHEMA);
-
--- Import CSV data into in-memory staging table
+        sqlite3 ":memory:" <<EOF
+-- Import CSV data into in-memory temp table
 .mode csv
-.import $temp_file staging.$TABLE
+.import $temp_file incoming
 
--- Remove header row if it was imported (check if id column contains 'id')
-DELETE FROM staging.$TABLE WHERE id = 'id';
-
--- Use INSERT OR REPLACE to merge data from in-memory staging to main table
-$MODE main.$TABLE 
-SELECT * FROM staging.$TABLE;
-
--- Detach in-memory database (automatically cleans up)
-DETACH DATABASE staging;
+-- Use INSERT OR REPLACE to merge data from in-memory temp to main table
+ATTACH DATABASE "$FILE" AS c;
+INSERT OR REPLACE INTO c.earthquakes SELECT * FROM incoming;
 EOF
         
         if [ $? -eq 0 ]; then
