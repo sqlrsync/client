@@ -196,7 +196,7 @@ func (c *Coordinator) resolveAuth(operation string) (*auth.ResolveResult, error)
 	}
 
 	// If prompting is needed for push operations
-	if result.ShouldPrompt || operation == "push" {
+	if result.ShouldPrompt || (operation == "push" && result.AccessKey == "") {
 		key, err := c.authResolver.PromptForKey(c.config.ServerURL, c.config.RemotePath, "PUSH")
 		if err != nil {
 			return nil, err
