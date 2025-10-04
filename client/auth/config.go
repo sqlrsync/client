@@ -166,16 +166,11 @@ func SaveLocalSecretsConfig(config *LocalSecretsConfig) error {
 		return fmt.Errorf("failed to create directory %s: %w", dir, err)
 	}
 
-	file, err := os.Create(path)
+  file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to create local-secrets config file %s: %w", path, err)
 	}
 	defer file.Close()
-
-	// Set file permissions to 0600 (read/write for owner only)
-	if err := file.Chmod(0600); err != nil {
-		return fmt.Errorf("failed to set permissions on local-secrets config file: %w", err)
-	}
 
 	encoder := toml.NewEncoder(file)
 	if err := encoder.Encode(config); err != nil {

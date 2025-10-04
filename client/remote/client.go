@@ -401,9 +401,9 @@ type Config struct {
 	EnableTrafficInspection bool // Enable detailed traffic logging
 	InspectionDepth         int  // How many bytes to inspect (default: 32)
 	PingPong                bool
-	AuthToken               string
+	AuthKey                 string
 	ClientVersion           string // version of the client software
-	SendKeyRequest          bool // the -sqlrsync file doesn't exist, so make a token
+	SendKeyRequest          bool   // the -sqlrsync file doesn't exist, so make a key
 
 	SendConfigCmd     bool // we don't have the version number or remote path
 	LocalHostname     string
@@ -685,9 +685,9 @@ func (c *Client) Connect() error {
 
 	headers := http.Header{}
 
-	headers.Set("Authorization", c.config.AuthToken)
+	headers.Set("Authorization", c.config.AuthKey)
 
-	headers.Set("X-ClientVersion", c.config.ClientVersion);
+	headers.Set("X-ClientVersion", c.config.ClientVersion)
 
 	if c.config.WsID != "" {
 		headers.Set("X-ClientID", c.config.WsID)
@@ -882,9 +882,9 @@ func (c *Client) Read(buffer []byte) (int, error) {
 		if c.config.Subscribe {
 			return 1 * time.Hour
 		}
-		// Use a longer timeout if sync is completed to allow final transaction processing
+		// Use a shorter timeout if sync is completed to allow final transaction processing
 		if c.isSyncCompleted() {
-			return 2 * time.Second
+			return 1 * time.Second
 		}
 		return 30 * time.Second
 	}()):
@@ -1012,7 +1012,7 @@ func (c *Client) Close() {
 	if c.conn != nil {
 		// Send close message
 		closeMessage := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")
-		err := c.conn.WriteControl(websocket.CloseMessage, closeMessage, time.Now().Add(5*time.Second))
+		err := c.conn.WriteControl(websocket.CloseMessage, closeMessage, time.Now().Add(3*time.Second))
 		if err != nil {
 			c.logger.Debug("Error sending close message", zap.Error(err))
 		} else {
