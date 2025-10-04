@@ -1,5 +1,5 @@
 # SQLite Rsync Go Client Makefile
-.PHONY: all build clean test deps check-deps install-deps run help
+.PHONY: all build clean test deps check-deps install-deps install run help
 
 # Build configuration
 BINARY_NAME := sqlrsync
@@ -55,6 +55,12 @@ build: $(SQLITE_RSYNC_LIB)
 	CGO_ENABLED=$(CGO_ENABLED) CGO_LDFLAGS="-L$(BRIDGE_LIB_DIR) -lsqlite_rsync" go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_FILE)
 	@echo "✓ Build complete: $(BUILD_DIR)/$(BINARY_NAME)"
 
+# Install the binary to system path
+install: build
+	@echo "Installing $(BINARY_NAME) to /usr/local/bin/..."
+	cp $(BUILD_DIR)/$(BINARY_NAME) /usr/local/bin/$(BINARY_NAME)
+	@echo "✓ Install complete: /usr/local/bin/$(BINARY_NAME)"
+
 # Build with debug symbols
 build-debug: check-deps
 	@echo "Building $(BINARY_NAME) with debug symbols..."
@@ -104,6 +110,7 @@ help:
 	@echo "  all          - Check dependencies and build (default)"
 	@echo "  build        - Build the binary"
 	@echo "  build-debug  - Build with debug symbols"
+	@echo "  install      - Build and install binary to /usr/local/bin"
 	@echo "  clean        - Remove build artifacts"
 	@echo "  deps         - Download Go dependencies"
 	@echo "  check-deps   - Check system dependencies"
@@ -118,5 +125,6 @@ help:
 	@echo "Usage examples:"
 	@echo "  make build"
 	@echo "  make run"
+	@echo "  make install"
 	@echo "  make run-dry"
 	@echo "  make test"
