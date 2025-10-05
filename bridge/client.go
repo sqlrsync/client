@@ -72,29 +72,25 @@ func (c *BridgeClient) GetDatabaseInfo() (*DatabaseInfo, error) {
 }
 
 // CheckIntegrity checks the database integrity using PRAGMA integrity_check
-func (c *BridgeClient) CheckIntegrity() (bool, string, error) {
+func (c *BridgeClient) CheckIntegrity() {
 	c.Logger.Debug("Checking database integrity", zap.String("path", c.Config.DatabasePath))
 
 	if _, err := os.Stat(c.Config.DatabasePath); os.IsNotExist(err) {
-		return false, "", fmt.Errorf("database file does not exist: %s", c.Config.DatabasePath)
+		c.Logger.Fatal("database file does not exist", zap.String("path", c.Config.DatabasePath))
 	}
 
-	fmt.Println("🐛 CHECKING INTEGRITY BEFORE PUSH")
 	isOk, errorMsg, err := CheckIntegrity(c.Config.DatabasePath)
 	if err != nil {
-		c.Logger.Error("Failed to check database integrity", zap.Error(err))
-		return false, "", err
+		c.Logger.Fatal("fatal error while checking integrity", zap.Error(err))
 	}
 
 	if !isOk {
-		c.Logger.Warn("Database integrity check failed",
+		c.Logger.Fatal("database integrity check failed",
 			zap.String("database", c.Config.DatabasePath),
 			zap.String("error", errorMsg))
-		return false, errorMsg, nil
 	}
 
 	c.Logger.Debug("Database integrity check passed", zap.String("database", c.Config.DatabasePath))
-	return true, "", nil
 }
 
 // RunPushSync runs the origin-side synchronization with provided I/O functions

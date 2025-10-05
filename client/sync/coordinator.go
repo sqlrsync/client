@@ -429,13 +429,7 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 	}
 
 	// Check database integrity after pull
-	isOk, errorMsg, err := localClient.CheckIntegrity()
-	if err != nil {
-		return fmt.Errorf("failed to check local database integrity: %w", err)
-	}
-	if !isOk {
-		return fmt.Errorf("database is corrupt: %s", errorMsg)
-	}
+	localClient.CheckIntegrity()
 
 	c.config.Version = remoteClient.GetVersion()
 	// Save pull result if needed
@@ -473,13 +467,8 @@ func (c *Coordinator) executePush() error {
 	defer localClient.Close()
 
 	// Check database integrity before pushing
-	isOk, errorMsg, err := localClient.CheckIntegrity()
-	if err != nil {
-		return fmt.Errorf("failed to check local database integrity: %w", err)
-	}
-	if !isOk {
-		return fmt.Errorf("cannot create local client because integrity check failed: %s", errorMsg)
-	}
+	localClient.CheckIntegrity()
+
 
 	// Resolve authentication
 	authResult, err := c.resolveAuth("push")
