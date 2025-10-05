@@ -132,6 +132,63 @@ int sqlite_rsync_get_db_info(const char *db_path, sqlite_db_info_t *info)
   sqlite3_close(db);
   return 0;
 }
+// SQLRSYNC
+// Check database integrity using PRAGMA integrity_check
+int sqlite_rsync_check_integrity(const char *db_path, char *error_msg, int error_msg_size)
+{
+  if (!db_path || !error_msg)
+  {
+    return -1;
+  }
+
+  // Initialize error message
+  error_msg[0] = '\0';
+
+  sqlite3 *db;
+  int rc = sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL);
+  if (rc != SQLITE_OK)
+  {
+    if (error_msg_size > 0)
+    {
+      snprintf(error_msg, error_msg_size, "Cannot open database: %s", sqlite3_errmsg(db));
+    }
+    if (db)
+      sqlite3_close(db);
+    return -1;
+  }
+
+  sqlite3_stmt *stmt;
+  rc = sqlite3_prepare_v2(db, "PRAGMA integrity_check", -1, &stmt, NULL);
+  if (rc != SQLITE_OK)
+  {
+    if (error_msg_size > 0)
+    {
+      snprintf(error_msg, error_msg_size, "Cannot prepare integrity check: %s", sqlite3_errmsg(db));
+    }
+    sqlite3_close(db);
+    return -1;
+  }
+
+  int result = 0; // Assume OK
+  while (sqlite3_step(stmt) == SQLITE_ROW)
+  {
+    const char *result_text = (const char *)sqlite3_column_text(stmt, 0);
+    if (result_text && strcmp(result_text, "ok") != 0)
+    {
+      // Database is corrupted
+      result = 1;
+      if (error_msg_size > 0)
+      {
+        snprintf(error_msg, error_msg_size, "Integrity check failed: %s", result_text);
+      }
+      break;
+    }
+  }
+
+  sqlite3_finalize(stmt);
+  sqlite3_close(db);
+  return result;
+}
 
 // Cleanup resources
 void sqlite_rsync_cleanup(void)
