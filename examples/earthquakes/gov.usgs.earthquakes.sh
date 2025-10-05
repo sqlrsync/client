@@ -6,7 +6,7 @@
 # Configuration
 FILE=earthquakes.db
 TABLE=earthquakes
-UPDATES=50m
+UPDATES=5m
 URL=https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_month.csv
 URL=https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.csv
 SQLRSYNC_PATH=usgs.gov/earthquakes.db
@@ -65,6 +65,9 @@ ATTACH DATABASE "$FILE" AS c;
 CREATE TABLE IF NOT EXISTS c.$TABLE ($SCHEMA);
 
 INSERT OR REPLACE INTO c.$TABLE SELECT * FROM incoming;
+
+SELECT CHANGES() AS CHANGED;
+DETACH DATABASE c;
 EOF
         
         if [ $? -eq 0 ]; then
@@ -79,7 +82,7 @@ EOF
             # Sync to SQLRsync server if path is configured
             if [ -n "$SQLRSYNC_PATH" ] && command -v sqlrsync >/dev/null 2>&1; then
                 echo "Syncing to SQLRsync server: $SQLRSYNC_PATH"
-                sqlrsync "$FILE" "$SQLRSYNC_PATH" -m "Added/updated $new_records records from USGS"
+                sqlrsync "$FILE" "$SQLRSYNC_PATH" -m "Added $new_records records, others updated"
                 if [ $? -eq 0 ]; then
                     echo "Successfully synced to server"
                 else
