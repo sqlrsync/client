@@ -61,7 +61,10 @@ sync_data() {
 
 -- Use INSERT OR REPLACE to merge data from in-memory temp to main table
 ATTACH DATABASE "$FILE" AS c;
-INSERT OR REPLACE INTO c.earthquakes SELECT * FROM incoming;
+
+CREATE TABLE IF NOT EXISTS c.$TABLE ($SCHEMA);
+
+INSERT OR REPLACE INTO c.$TABLE SELECT * FROM incoming;
 EOF
         
         if [ $? -eq 0 ]; then
@@ -76,7 +79,7 @@ EOF
             # Sync to SQLRsync server if path is configured
             if [ -n "$SQLRSYNC_PATH" ] && command -v sqlrsync >/dev/null 2>&1; then
                 echo "Syncing to SQLRsync server: $SQLRSYNC_PATH"
-                sqlrsync "$FILE" "$SQLRSYNC_PATH"
+                sqlrsync "$FILE" "$SQLRSYNC_PATH" -m "Added/updated $new_records records from USGS"
                 if [ $? -eq 0 ]; then
                     echo "Successfully synced to server"
                 else

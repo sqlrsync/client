@@ -17,3 +17,4 @@ client/sqlrsync
 client/sqlrsync
 client/sqlrsync_simple
 asciinema/
+examples/earthquakes/nohup.out
