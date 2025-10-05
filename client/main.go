@@ -155,7 +155,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 	// Create sync coordinator
 	coordinator := sync.NewCoordinator(&sync.CoordinatorConfig{
 		ServerURL:         serverURL,
-		ProvidedAuthToken: getAuthToken(),
+		ProvidedAuthKey:   getAuthKey(),
 		ProvidedPullKey:   pullKey,
 		ProvidedPushKey:   pushKey,
 		ProvidedReplicaID: replicaID,
@@ -224,10 +224,10 @@ func determineOperation(args []string) (sync.Operation, string, string, error) {
 	return sync.Operation(0), "", "", fmt.Errorf("invalid arguments")
 }
 
-func getAuthToken() string {
+func getAuthKey() string {
 	// Try environment variable first
-	if token := os.Getenv("SQLRSYNC_AUTH_TOKEN"); token != "" {
-		return token
+	if key := os.Getenv("SQLRSYNC_AUTH_KEY"); key != "" {
+		return key
 	}
 
 	// Try pull/push keys

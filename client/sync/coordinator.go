@@ -32,7 +32,7 @@ const (
 // CoordinatorConfig holds sync coordinator configuration
 type CoordinatorConfig struct {
 	ServerURL         string
-	ProvidedAuthToken string // Explicitly provided auth token
+	ProvidedAuthKey   string // Explicitly provided auth key
 	ProvidedPullKey   string // Explicitly provided pull key
 	ProvidedPushKey   string // Explicitly provided push key
 	ProvidedReplicaID string // Explicitly provided replica ID
@@ -133,10 +133,10 @@ func (c *Coordinator) displayDryRunInfo(operation string, authResult *auth.Resol
 
 	if operation != "local" {
 		fmt.Printf(" - Server:         %s\n", color.GreenString(serverURL))
-		if authResult.AccessToken != "" {
-			fmt.Printf(" - Access Token:   %s\n", color.GreenString(authResult.AccessToken))
+		if authResult.AccessKey != "" {
+			fmt.Printf(" - Access Key:     %s\n", color.GreenString(authResult.AccessKey))
 		} else {
-			fmt.Printf(" - Access Token:   %s\n", color.YellowString("(none)"))
+			fmt.Printf(" - Access Key:     %s\n", color.YellowString("(none)"))
 		}
 
 		if operation == "push" {
@@ -179,14 +179,14 @@ func (c *Coordinator) resolveAuth(operation string) (*auth.ResolveResult, error)
 		Logger:            c.logger,
 	}
 
-	// Try explicit auth token first
-	if c.config.ProvidedAuthToken != "" {
+	// Try explicit auth key first
+	if c.config.ProvidedAuthKey != "" {
 		return &auth.ResolveResult{
-			AccessToken: c.config.ProvidedAuthToken,
-			ReplicaID:   c.config.ProvidedReplicaID,
-			ServerURL:   c.config.ServerURL,
-			RemotePath:  c.config.RemotePath,
-			LocalPath:   c.config.LocalPath,
+			AccessKey:  c.config.ProvidedAuthKey,
+			ReplicaID:  c.config.ProvidedReplicaID,
+			ServerURL:  c.config.ServerURL,
+			RemotePath: c.config.RemotePath,
+			LocalPath:  c.config.LocalPath,
 		}, nil
 	}
 
@@ -196,12 +196,12 @@ func (c *Coordinator) resolveAuth(operation string) (*auth.ResolveResult, error)
 	}
 
 	// If prompting is needed for push operations
-	if result.ShouldPrompt && operation == "push" {
-		token, err := c.authResolver.PromptForAdminKey(c.config.ServerURL)
+	if result.ShouldPrompt || (operation == "push" && result.AccessKey == "") {
+		key, err := c.authResolver.PromptForKey(c.config.ServerURL, c.config.RemotePath, "PUSH")
 		if err != nil {
 			return nil, err
 		}
-		result.AccessToken = token
+		result.AccessKey = key
 		result.ShouldPrompt = false
 	}
 
@@ -245,7 +245,7 @@ func (c *Coordinator) executeSubscribe() error {
 	c.subManager = subscription.NewManager(&subscription.ManagerConfig{
 		ServerURL:             authResult.ServerURL,
 		ReplicaPath:           authResult.RemotePath,
-		AuthToken:             authResult.AccessToken,
+		AccessKey:             authResult.AccessKey,
 		ReplicaID:             authResult.ReplicaID,
 		WsID:                  c.config.WsID,
 		ClientVersion:         c.config.ClientVersion,
@@ -366,7 +366,7 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 	// Create remote client for WebSocket transport
 	remoteClient, err := remote.New(&remote.Config{
 		ServerURL:               serverURL + "/sapi/pull/" + remotePath,
-		AuthToken:               authResult.AccessToken,
+		AuthKey:                 authResult.AccessKey,
 		ReplicaID:               authResult.ReplicaID,
 		Timeout:                 8000,
 		PingPong:                false, // No ping/pong needed for single sync
@@ -398,7 +398,17 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 
 	// Connect to remote server
 	if err := remoteClient.Connect(); err != nil {
-		return fmt.Errorf("failed to connect to server: %w", err)
+		if (strings.Contains(err.Error(), "key is not authorized") || strings.Contains(err.Error(), "404 Path not found")) && authResult.AccessKey == "" {
+			key, err := c.authResolver.PromptForKey(c.config.ServerURL, c.config.RemotePath, "PULL")
+			if err != nil {
+				return fmt.Errorf("coordinator failed to get key interactively: %w", err)
+			}
+			c.config.ProvidedAuthKey = key
+			return c.executePull(isSubscription)
+		} else {
+
+			return fmt.Errorf("coordinator failed to connect to server: %w", err)
+		}
 	}
 
 	// Create local client for SQLite operations
@@ -495,7 +505,7 @@ func (c *Coordinator) executePush() error {
 		ServerURL:               serverURL + "/sapi/push/" + remotePath,
 		PingPong:                true,
 		Timeout:                 15000,
-		AuthToken:               authResult.AccessToken,
+		AuthKey:                 authResult.AccessKey,
 		Logger:                  c.logger.Named("remote"),
 		EnableTrafficInspection: c.config.Verbose,
 		LocalHostname:           localHostname,
@@ -507,7 +517,7 @@ func (c *Coordinator) executePush() error {
 		CommitMessage:           c.config.CommitMessage,
 		WsID:                    c.config.WsID, // Add websocket ID
 		ClientVersion:           c.config.ClientVersion,
-		ProgressCallback:        nil,           //remote.DefaultProgressCallback(remote.FormatSimple),
+		ProgressCallback:        nil, //remote.DefaultProgressCallback(remote.FormatSimple),
 		ProgressConfig: &remote.ProgressConfig{
 			Enabled:        true,
 			Format:         remote.FormatSimple,

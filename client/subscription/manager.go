@@ -1,12 +1,14 @@
 package subscription
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -38,7 +40,7 @@ type Message struct {
 type ManagerConfig struct {
 	ServerURL             string
 	ReplicaPath           string
-	AuthToken             string
+	AccessKey             string
 	ReplicaID             string
 	WsID                  string // websocket ID for client identification
 	ClientVersion         string // version of the client software
@@ -199,7 +201,7 @@ func (m *Manager) doConnect() error {
 	u.Path = strings.TrimSuffix(u.Path, "/") + "/sapi/subscribe/" + m.config.ReplicaPath
 
 	headers := http.Header{}
-	headers.Set("Authorization", m.config.AuthToken)
+	headers.Set("Authorization", m.config.AccessKey)
 	if m.config.ReplicaID != "" {
 		headers.Set("X-ReplicaID", m.config.ReplicaID)
 	}
@@ -226,6 +228,20 @@ func (m *Manager) doConnect() error {
 				response.Body.Close()
 				if readErr == nil {
 					respBodyStr = strings.TrimSpace(string(respBytes))
+				}
+			}
+
+			// Connect to remote server
+			if strings.Contains(err.Error(), "key is not authorized") || strings.Contains(err.Error(), "404 Path not found") {
+				if m.config.AccessKey == "" {
+					key, err := PromptForKey(m.config.ServerURL, m.config.ReplicaPath, "PULL")
+					if err != nil {
+						return fmt.Errorf("manager failed to get key interactively: %w", err)
+					}
+					m.config.AccessKey = key
+					return m.doConnect()
+				} else {
+					return fmt.Errorf("manager failed to connect to server: %w", err)
 				}
 			}
 
@@ -573,4 +589,25 @@ func (m *Manager) pingLoop() {
 			}
 		}
 	}
+}
+
+// PromptForKey prompts the user for an admin key
+func PromptForKey(serverURL string, remotePath string, keyType string) (string, error) {
+	httpServer := strings.Replace(serverURL, "ws", "http", 1)
+	fmt.Println("Replica not found when using unauthenticated access.  Try again using a key or check your spelling.")
+	fmt.Println("   Get a key at " + httpServer + "/namespaces or " + httpServer + "/" + remotePath)
+	fmt.Print("   Provide a key to " + keyType + ": ")
+
+	reader := bufio.NewReader(os.Stdin)
+	key, err := reader.ReadString('\n')
+	if err != nil {
+		return "", fmt.Errorf("failed to read admin key: %w", err)
+	}
+
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", fmt.Errorf("admin key cannot be empty")
+	}
+
+	return key, nil
 }
