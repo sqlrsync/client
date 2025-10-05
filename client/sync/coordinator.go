@@ -427,6 +427,16 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 	if err := c.performPullSync(localClient, remoteClient); err != nil {
 		return fmt.Errorf("pull synchronization failed: %w", err)
 	}
+
+	// Check database integrity after pull
+	isOk, errorMsg, err := localClient.CheckIntegrity()
+	if err != nil {
+		return fmt.Errorf("failed to check local database integrity: %w", err)
+	}
+	if !isOk {
+		return fmt.Errorf("database is corrupt: %s", errorMsg)
+	}
+
 	c.config.Version = remoteClient.GetVersion()
 	// Save pull result if needed
 	if remoteClient.GetNewPullKey() != "" && c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath) {
@@ -450,9 +460,25 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 
 // executePush performs a push sync operation
 func (c *Coordinator) executePush() error {
-	// Validate that database file exists
-	if _, err := os.Stat(c.config.LocalPath); os.IsNotExist(err) {
-		return fmt.Errorf("database file does not exist: %s", c.config.LocalPath)
+	// Create local client for SQLite operations
+	localClient, err := bridge.New(&bridge.BridgeConfig{
+		DatabasePath:             c.config.LocalPath,
+		DryRun:                   c.config.DryRun,
+		Logger:                   c.logger.Named("local"),
+		EnableSQLiteRsyncLogging: c.config.Verbose,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create local client: %w", err)
+	}
+	defer localClient.Close()
+
+	// Check database integrity before pushing
+	isOk, errorMsg, err := localClient.CheckIntegrity()
+	if err != nil {
+		return fmt.Errorf("failed to check local database integrity: %w", err)
+	}
+	if !isOk {
+		return fmt.Errorf("cannot create local client because integrity check failed: %s", errorMsg)
 	}
 
 	// Resolve authentication
@@ -472,18 +498,6 @@ func (c *Coordinator) executePush() error {
 	if c.config.RemotePath != "" {
 		remotePath = c.config.RemotePath
 	}
-
-	// Create local client for SQLite operations
-	localClient, err := bridge.New(&bridge.BridgeConfig{
-		DatabasePath:             c.config.LocalPath,
-		DryRun:                   c.config.DryRun,
-		Logger:                   c.logger.Named("local"),
-		EnableSQLiteRsyncLogging: c.config.Verbose,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create local client: %w", err)
-	}
-	defer localClient.Close()
 
 	// Get absolute path for the local database
 	absLocalPath, err := filepath.Abs(c.config.LocalPath)
