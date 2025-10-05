@@ -8,6 +8,7 @@ FILE=earthquakes.db
 TABLE=earthquakes
 UPDATES=50m
 URL=https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_month.csv
+URL=https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.csv
 SQLRSYNC_PATH=usgs.gov/earthquakes.db
 PRIMARY_KEY=id
 MODE="INSERT OR REPLACE INTO"
