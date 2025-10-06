@@ -206,6 +206,9 @@ func determineOperation(args []string) (sync.Operation, string, string, error) {
 		path := args[0]
 		if isLocal(path) {
 			// LOCAL -> push to default remote
+			if subscribing {
+				return sync.OperationPushSubscribe, path, "", nil
+			}
 			return sync.OperationPush, path, "", nil
 		} else {
 			// REMOTE -> pull to default local
