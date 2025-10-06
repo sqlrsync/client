@@ -312,6 +312,12 @@ func (c *Coordinator) executePullSubscribe() error {
 			break
 		}
 
+		fmt.Printf("🔄 New version %s announced at %s!\n", version, time.Now().Format(time.RFC3339))
+		// Update version for next sync
+		if version != "latest" {
+			c.config.Version = version
+		}
+
 	}
 }
 

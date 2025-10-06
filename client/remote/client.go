@@ -695,7 +695,6 @@ func (c *Client) Connect() error {
 	headers := http.Header{}
 
 	headers.Set("Authorization", c.config.AuthKey)
-	headers.Set("Sec-WebSocket-Extensions", "permessage-deflate")
 
 	// Set X-ClientID to the wsID from defaults config
 	wsID := c.config.WsID
