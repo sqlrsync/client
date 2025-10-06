@@ -1216,6 +1216,7 @@ func (c *Coordinator) sendMergeConflictNotification(serverURL, replicaName, vers
 	fmt.Printf("   Version: %s\n", version)
 	fmt.Printf("   Hostname: %s\n", hostname)
 	//fmt.Printf("   wsID: %s\n", wsID)
+	fmt.Printf("   Diff: %s\n", diffData)
 
 	return fmt.Errorf("merge conflict requires manual resolution")
 }
