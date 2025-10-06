@@ -22,7 +22,7 @@ const (
 	SQLRSYNC_NEWREPLICAVERSION = 0x52 // New version available
 	SQLRSYNC_KEYREQUEST        = 0x53 // request keys
 	SQLRSYNC_COMMITMESSAGE     = 0x54 // commit message
-	SQLRSYNC_CHANGED           = 0x57 // Write detected notification with duration
+	SQLRSYNC_CHANGED           = 0x55 // Write detected notification with duration
 )
 
 // ProgressPhase represents the current phase of the sync operation

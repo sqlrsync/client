@@ -287,7 +287,7 @@ func (c *Coordinator) executeSubscribe() error {
 			return fmt.Errorf("sync #%d failed: %w", syncCount, err)
 		}
 
-		fmt.Printf("✅ Sync complete. Waiting for new version...\n")
+		fmt.Printf("✅ Sync completed at %s. Waiting for new version...\n", time.Now().Format(time.RFC3339))
 
 		// Wait for new version or shutdown
 		select {
@@ -326,7 +326,7 @@ func (c *Coordinator) executeSubscribe() error {
 			}
 		}
 
-		fmt.Printf("🔄 New version %s announced!\n", version)
+		fmt.Printf("🔄 New version %s announced at %s!\n", version, time.Now().Format(time.RFC3339))
 		// Update version for next sync
 		if version != "latest" {
 			c.config.Version = version
@@ -788,8 +788,10 @@ func (c *Coordinator) executePushSubscribe() error {
 		PingPong:                true,
 		Timeout:                 60000,
 		AuthKey:                 authResult.AccessKey,
+		ClientVersion:           c.config.ClientVersion,
 		Logger:                  c.logger.Named("remote-notifications"),
 		EnableTrafficInspection: c.config.Verbose,
+		WsID:                    c.config.WsID, // Add websocket ID
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create remote client: %w", err)
@@ -1008,6 +1010,8 @@ func (c *Coordinator) sendWriteNotification(path string, timestamp time.Time) er
 		c.logger.Debug("Sent initial SQLRSYNC_CHANGED",
 			zap.Duration("waitIdle", waitIdleDuration))
 
+		fmt.Printf("✏️  Detected local change at %s - will PUSH when idle for %v seconds.\n", timestamp.Format(time.RFC3339), waitIdleDuration.Seconds())
+
 		return nil
 	}
 
@@ -1102,6 +1106,8 @@ func (c *Coordinator) executeAutoMerge(localClient *bridge.BridgeClient, remoteC
 		PingPong:                false,
 		Logger:                  c.logger.Named("merge-pull"),
 		Version:                 latestVersion,
+		ClientVersion:           c.config.ClientVersion,
+		WsID:                    c.config.WsID,
 		SendConfigCmd:           false,
 		SendKeyRequest:          false,
 		EnableTrafficInspection: c.config.Verbose,
