@@ -149,11 +149,27 @@ jobs:
           echo "Testing sqlrsync usgs.gov/earthquakes.db..."
           ./client/bin/sqlrsync usgs.gov/earthquakes.db
 
-      - name: Test sqlrsync with subscribe for 10 seconds (Unix)
-        if: matrix.os != 'windows'
+      - name: Test sqlrsync with subscribe for 10 seconds (Linux)
+        if: matrix.os == 'linux'
         run: |
           echo "Testing sqlrsync usgs.gov/earthquakes.db --subscribe for 10 seconds..."
           timeout 10s ./client/bin/sqlrsync usgs.gov/earthquakes.db --subscribe > subscribe_output.log 2>&1 || true
+
+      - name: Test sqlrsync with subscribe for 10 seconds (macOS)
+        if: matrix.os == 'darwin'
+        run: |
+          echo "Testing sqlrsync usgs.gov/earthquakes.db --subscribe for 10 seconds..."
+          # macOS doesn't have timeout, use gtimeout or alternative
+          if command -v gtimeout &> /dev/null; then
+            gtimeout 10s ./client/bin/sqlrsync usgs.gov/earthquakes.db --subscribe > subscribe_output.log 2>&1 || true
+          else
+            # Fallback: run in background and kill after 10 seconds
+            ./client/bin/sqlrsync usgs.gov/earthquakes.db --subscribe > subscribe_output.log 2>&1 &
+            PID=$!
+            sleep 10
+            kill $PID 2>/dev/null || true
+            wait $PID 2>/dev/null || true
+          fi
 
       - name: Test sqlrsync with subscribe for 10 seconds (Windows)
         if: matrix.os == 'windows'
@@ -168,6 +184,16 @@ jobs:
       - name: Verify subscribe output (Unix)
         if: matrix.os != 'windows'
         run: |
+          echo "Checking for 'Sync completed at' in output..."
+          cat subscribe_output.log
+          if grep -q "Sync completed at" subscribe_output.log; then
+            echo "✅ SUCCESS: Found 'Sync completed at' in output"
+          else
+            echo "❌ FAILURE: 'Sync completed at' not found in output"
+            echo "Full output:"
+            cat subscribe_output.log
+            exit 1
+          fi
           echo "Checking for 'Sync completed at' in output..."
           cat subscribe_output.log
           if grep -q "Sync completed at" subscribe_output.log; then
