@@ -1,0 +1,79 @@
+name: End-to-End Tests
+
+on:
+  workflow_run:
+    workflows: ["Multi-Platform Build"]
+    types:
+      - completed
+    branches:
+      - main
+      - develop
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: "Build workflow run ID to download artifacts from"
+        required: false
+        type: string
+
+jobs:
+  securityIntention:
+    name: Security Intention
+    runs-on: ubuntu-latest
+    steps:
+      - name: Security Intention
+        run: |
+          echo "This workflow is intended to test the project in a secure manner:"
+          echo " - Downloads artifacts from the build workflow"
+          echo " - Only uses official Github Actions \"actions/*\""
+          echo " - Performs end-to-end testing with production data sources"
+
+  e2e-test:
+    name: End-to-End Test
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    steps:
+      - name: Download Linux artifact from build workflow
+        uses: actions/download-artifact@v4
+        with:
+          name: sqlrsync-linux-x86_64
+          run-id: ${{ github.event.workflow_run.id || github.event.inputs.build_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Make sqlrsync executable
+        run: |
+          chmod +x sqlrsync-linux-x86_64
+          sudo cp sqlrsync-linux-x86_64 /usr/local/bin/sqlrsync
+
+      - name: Test sqlrsync --version
+        run: |
+          echo "Testing sqlrsync --version..."
+          sqlrsync --version
+
+      - name: Test sqlrsync help
+        run: |
+          echo "Testing sqlrsync help..."
+          sqlrsync || true
+
+      - name: Test sqlrsync with sqlrsync.com/usgs.gov/earthquakes.db
+        run: |
+          echo "Testing sqlrsync usgs.gov/earthquakes.db..."
+          sqlrsync usgs.gov/earthquakes.db
+
+      - name: Test sqlrsync with subscribe for 10 seconds
+        run: |
+          echo "Testing sqlrsync usgs.gov/earthquakes.db --subscribe for 10 seconds..."
+          timeout 10s sqlrsync usgs.gov/earthquakes.db --subscribe > subscribe_output.log 2>&1 || true
+
+      - name: Verify subscribe output
+        run: |
+          echo "Checking for 'Sync completed at' in output..."
+          cat subscribe_output.log
+          if grep -q "Sync completed at" subscribe_output.log; then
+            echo "✅ SUCCESS: Found 'Sync completed at' in output"
+          else
+            echo "❌ FAILURE: 'Sync completed at' not found in output"
+            echo "Full output:"
+            cat subscribe_output.log
+            exit 1
+          fi
