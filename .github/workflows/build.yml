@@ -1,13 +1,9 @@
 name: Multi-Platform Build
-
 on:
-  push:
+  pull_request:
     branches:
       - main
-      - develop
-      - "v*" # matches any branch that starts with 'v'
-  pull_request:
-    branches: [main]
+      - "v*"
   release:
     types: [published]
 
@@ -137,6 +133,52 @@ jobs:
           cd client
           # Use make with MSYS2/MinGW
           bash -c "make build"
+
+      - name: Test sqlrsync --version
+        run: |
+          echo "Testing sqlrsync --version..."
+          ./client/bin/sqlrsync --version
+
+      - name: Test sqlrsync help
+        run: |
+          echo "Testing sqlrsync help..."
+          ./client/bin/sqlrsync || true
+
+      - name: Test sqlrsync with usgs.gov/earthquakes.db
+        run: |
+          echo "Testing sqlrsync usgs.gov/earthquakes.db..."
+          ./client/bin/sqlrsync usgs.gov/earthquakes.db
+
+      - name: Test sqlrsync with subscribe for 10 seconds (Unix)
+        if: matrix.os != 'windows'
+        run: |
+          echo "Testing sqlrsync usgs.gov/earthquakes.db --subscribe for 10 seconds..."
+          timeout 10s ./client/bin/sqlrsync usgs.gov/earthquakes.db --subscribe > subscribe_output.log 2>&1 || true
+
+      - name: Test sqlrsync with subscribe for 10 seconds (Windows)
+        if: matrix.os == 'windows'
+        run: |
+          echo "Testing sqlrsync usgs.gov/earthquakes.db --subscribe for 10 seconds..."
+          # Windows doesn't have timeout, use PowerShell equivalent
+          $job = Start-Job { ./client/bin/sqlrsync.exe usgs.gov/earthquakes.db --subscribe }
+          Wait-Job $job -Timeout 10
+          Stop-Job $job
+          Receive-Job $job > subscribe_output.log 2>&1 || $true
+
+      - name: Verify subscribe output (Unix)
+        if: matrix.os != 'windows'
+        run: |
+          echo "Checking for 'Sync completed at' in output..."
+          cat subscribe_output.log
+          if grep -q "Sync completed at" subscribe_output.log; then
+            echo "✅ SUCCESS: Found 'Sync completed at' in output"
+          else
+            echo "❌ FAILURE: 'Sync completed at' not found in output"
+            echo "Full output:"
+            cat subscribe_output.log
+            exit 1
+          fi
+
 
       - name: Create release directory
         run: |
