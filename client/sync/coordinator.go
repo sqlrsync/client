@@ -223,7 +223,7 @@ func (c *Coordinator) resolveAuth(operation string) (*auth.ResolveResult, error)
 
 // executePullSubscribe runs pull sync with subscription for new versions
 func (c *Coordinator) executePullSubscribe() error {
-	fmt.Println("📡 Subscribe mode enabled - will watch for new versions...")
+	fmt.Println("📡 PULL Subscribe mode enabled - will watch for new versions...")
 	fmt.Println("   Press Ctrl+C to stop watching...")
 
 	// Resolve authentication for subscription
