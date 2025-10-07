@@ -26,7 +26,7 @@ type Operation int
 const (
 	OperationPull Operation = iota
 	OperationPush
-	OperationSubscribe
+	OperationPullSubscribe
 	OperationPushSubscribe
 	OperationLocalSync
 )
@@ -107,8 +107,8 @@ func (c *Coordinator) Execute() error {
 		return c.executePull(false)
 	case OperationPush:
 		return c.executePush()
-	case OperationSubscribe:
-		return c.executeSubscribe()
+	case OperationPullSubscribe:
+		return c.executePullSubscribe()
 	case OperationPushSubscribe:
 		return c.executePushSubscribe()
 	case OperationLocalSync:
@@ -221,8 +221,8 @@ func (c *Coordinator) resolveAuth(operation string) (*auth.ResolveResult, error)
 	return result, nil
 }
 
-// executeSubscribe runs pull sync with subscription for new versions
-func (c *Coordinator) executeSubscribe() error {
+// executePullSubscribe runs pull sync with subscription for new versions
+func (c *Coordinator) executePullSubscribe() error {
 	fmt.Println("📡 Subscribe mode enabled - will watch for new versions...")
 	fmt.Println("   Press Ctrl+C to stop watching...")
 
@@ -298,38 +298,17 @@ func (c *Coordinator) executeSubscribe() error {
 		}
 
 		// Wait for new version notification
-		var version string
 		for {
-			version, err = c.subManager.WaitForNewVersionMsg()
-			if err != nil {
-				// Check if this is a cancellation (graceful shutdown)
-				if strings.Contains(err.Error(), "cancelled") {
-					fmt.Println("Subscription stopped by user.")
-					return nil
+			if err := c.waitForVersionAndPull(false); err != nil {
+				// Check if this is a cancellation or reconnection failure (both are terminal)
+				if strings.Contains(err.Error(), "cancelled") || strings.Contains(err.Error(), "reconnection failed") {
+					return err
 				}
-
-				// Check if this is a permanent reconnection failure
-				if strings.Contains(err.Error(), "reconnection failed") {
-					fmt.Printf("❌ Failed to maintain connection to subscription service: %v\n", err)
-					fmt.Println("   Please check your network connection and try again later.")
-					return fmt.Errorf("subscription connection lost: %w", err)
-				}
-
-				c.logger.Error("Subscription error", zap.Error(err))
-				return fmt.Errorf("subscription error: %w", err)
-			}
-			if c.config.Version == version {
-				fmt.Printf("ℹ️  Already at version %s, waiting for next update...\n", version)
+				// For other errors, continue the loop to try again
 				continue
-			} else {
-				break
 			}
-		}
-
-		fmt.Printf("🔄 New version %s announced at %s!\n", version, time.Now().Format(time.RFC3339))
-		// Update version for next sync
-		if version != "latest" {
-			c.config.Version = version
+			// Successfully got and processed a new version, break out of version wait loop
+			break
 		}
 
 	}
@@ -810,7 +789,7 @@ func (c *Coordinator) executePushSubscribe() error {
 	if keyType == "PULL" {
 		fmt.Println("⚠️  Warning: Using a PULL key - ignoring --waitIdle/--maxInterval/--minInterval settings")
 		fmt.Println("   Switching to PULL subscription mode instead...")
-		return c.executeSubscribe()
+		return c.executePullSubscribe()
 	}
 
 	fmt.Println("ℹ️  Change notifications will be sent to server for analytics")
@@ -837,6 +816,33 @@ func (c *Coordinator) executePushSubscribe() error {
 	}
 	if minIntervalDuration > 0 {
 		fmt.Printf("   Min interval: %v\n", minIntervalDuration)
+	}
+
+	// Also set up subscription to listen for remote updates (bidirectional sync)
+	fmt.Println("📡 Setting up subscription for remote updates...")
+	c.subManager = subscription.NewManager(&subscription.ManagerConfig{
+		ServerURL:             serverURL,
+		ReplicaPath:           remotePath,
+		AccessKey:             authResult.AccessKey,
+		ReplicaID:             authResult.ReplicaID,
+		WsID:                  c.config.WsID,
+		ClientVersion:         c.config.ClientVersion,
+		Logger:                c.logger.Named("subscription"),
+		MaxReconnectAttempts:  20,              // Infinite reconnect attempts
+		InitialReconnectDelay: 5 * time.Second, // Start with 5 seconds delay
+		MaxReconnectDelay:     5 * time.Minute, // Cap at 5 minutes
+	})
+
+	// Connect to subscription service for pull notifications
+	if err := c.subManager.Connect(); err != nil {
+		c.logger.Warn("Failed to connect to subscription service for pull notifications", zap.Error(err))
+		fmt.Println("⚠️  Warning: Could not set up pull subscription - will only push changes")
+	} else {
+		defer c.subManager.Close()
+		fmt.Println("✅ Subscribed to remote updates - will pull new versions automatically")
+
+		// Start goroutine to handle pull notifications
+		go c.handlePullNotifications()
 	}
 
 	var waitTimer *time.Timer
@@ -1291,6 +1297,104 @@ func formatBytes(bytes int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// handlePullNotifications runs in a goroutine to listen for remote updates and pull them
+func (c *Coordinator) handlePullNotifications() {
+	c.logger.Info("Starting pull notification handler")
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			c.logger.Info("Pull notification handler stopped by context cancellation")
+			return
+		default:
+		}
+
+		// Wait for new version and pull if needed
+		if err := c.waitForVersionAndPull(true); err != nil {
+			if strings.Contains(err.Error(), "cancelled") || strings.Contains(err.Error(), "reconnection failed") {
+				return
+			}
+			c.logger.Warn("Pull subscription error", zap.Error(err))
+			continue
+		}
+	}
+}
+
+// waitForVersionAndPull waits for a new version notification and pulls it if different from current version
+// isBackground indicates if this is called from a background goroutine (affects logging and error handling)
+func (c *Coordinator) waitForVersionAndPull(isBackground bool) error {
+	// Wait for new version notification
+	version, err := c.subManager.WaitForNewVersionMsg()
+	if err != nil {
+		// Check if this is a cancellation (graceful shutdown)
+		if strings.Contains(err.Error(), "cancelled") {
+			if isBackground {
+				c.logger.Info("Pull notification handler stopped by user")
+			} else {
+				fmt.Println("Subscription stopped by user.")
+			}
+			return err
+		}
+
+		// Check if this is a permanent reconnection failure
+		if strings.Contains(err.Error(), "reconnection failed") {
+			if isBackground {
+				c.logger.Error("Pull subscription connection lost permanently", zap.Error(err))
+				fmt.Printf("❌ Lost connection to pull subscription service: %v\n", err)
+			} else {
+				fmt.Printf("❌ Failed to maintain connection to subscription service: %v\n", err)
+				fmt.Println("   Please check your network connection and try again later.")
+			}
+			return err
+		}
+
+		if isBackground {
+			c.logger.Warn("Pull subscription error", zap.Error(err))
+		} else {
+			c.logger.Error("Subscription error", zap.Error(err))
+		}
+		return err
+	}
+
+	// Check if we already have this version
+	if c.config.Version == version {
+		if isBackground {
+			c.logger.Debug("Already at version, skipping pull", zap.String("version", version))
+		} else {
+			fmt.Printf("ℹ️  Already at version %s, waiting for next update...\n", version)
+		}
+		return nil // Not an error, just skip
+	}
+
+	if isBackground {
+		fmt.Printf("📥 New remote version %s detected - pulling update...\n", version)
+	} else {
+		fmt.Printf("🔄 New version %s announced at %s!\n", version, time.Now().Format(time.RFC3339))
+	}
+
+	// Update version for the pull
+	oldVersion := c.config.Version
+	if version != "latest" {
+		c.config.Version = version
+	}
+
+	// Perform the pull
+	if err := c.executePull(true); err != nil {
+		if isBackground {
+			c.logger.Error("Auto-pull failed", zap.Error(err), zap.String("version", version))
+			fmt.Printf("❌ Failed to pull version %s: %v\n", version, err)
+			// Restore old version on failure
+			c.config.Version = oldVersion
+		}
+		return err
+	}
+
+	if isBackground {
+		fmt.Printf("✅ Successfully pulled version %s at %s\n", version, time.Now().Format(time.RFC3339))
+	}
+	return nil
 }
 
 // Close cleanly shuts down the coordinator
