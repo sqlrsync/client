@@ -214,7 +214,7 @@ func determineOperation(args []string) (sync.Operation, string, string, error) {
 			// REMOTE -> pull to default local
 			dbname := filepath.Base(path)
 			if subscribing {
-				return sync.OperationSubscribe, dbname, path, nil
+				return sync.OperationPullSubscribe, dbname, path, nil
 			}
 			return sync.OperationPull, dbname, path, nil
 		}
@@ -234,7 +234,7 @@ func determineOperation(args []string) (sync.Operation, string, string, error) {
 		} else if !originLocal && replicaLocal {
 			// REMOTE LOCAL -> pull (or subscribe)
 			if subscribing {
-				return sync.OperationSubscribe, replica, origin, nil
+				return sync.OperationPullSubscribe, replica, origin, nil
 			}
 			return sync.OperationPull, replica, origin, nil
 		} else if originLocal && replicaLocal {
