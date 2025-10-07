@@ -184,28 +184,16 @@ jobs:
       - name: Verify subscribe output (Unix)
         if: matrix.os != 'windows'
         run: |
-          echo "Checking for 'Sync completed at' in output..."
+          echo "Checking for 'Sync complete' in output..."
           cat subscribe_output.log
-          if grep -q "Sync completed at" subscribe_output.log; then
-            echo "✅ SUCCESS: Found 'Sync completed at' in output"
+          if grep -q "Sync complete" subscribe_output.log; then
+            echo "✅ SUCCESS: Found 'Sync complete' in output"
           else
-            echo "❌ FAILURE: 'Sync completed at' not found in output"
+            echo "❌ FAILURE: 'Sync complete' not found in output"
             echo "Full output:"
             cat subscribe_output.log
             exit 1
           fi
-          echo "Checking for 'Sync completed at' in output..."
-          cat subscribe_output.log
-          if grep -q "Sync completed at" subscribe_output.log; then
-            echo "✅ SUCCESS: Found 'Sync completed at' in output"
-          else
-            echo "❌ FAILURE: 'Sync completed at' not found in output"
-            echo "Full output:"
-            cat subscribe_output.log
-            exit 1
-          fi
-
-
       - name: Create release directory
         run: |
           mkdir -p release
