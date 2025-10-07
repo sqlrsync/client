@@ -37,132 +37,132 @@ jobs:
           - os: linux
             runs-on: ubuntu-latest
             arch: x86_64
-      steps:
-        - name: Checkout code
-          uses: actions/checkout@v4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-        - name: Set up Go
-          uses: actions/setup-go@v4
-          with:
-            go-version: "1.21"
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.21"
 
-        - name: Install dependencies (Ubuntu)
-          if: matrix.os == 'linux'
-          run: |
-            sudo apt-get update
-            sudo apt-get install -y sqlite3 libsqlite3-dev build-essential
+      - name: Install dependencies (Ubuntu)
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sqlite3 libsqlite3-dev build-essential
 
-        - name: Install dependencies (macOS)
-          if: matrix.os == 'darwin'
-          run: |
-            brew install sqlite3
+      - name: Install dependencies (macOS)
+        if: matrix.os == 'darwin'
+        run: |
+          brew install sqlite3
 
-        - name: Install dependencies (Windows)
-          if: matrix.os == 'windows'
-          run: |
-            choco install sqlite
+      - name: Install dependencies (Windows)
+        if: matrix.os == 'windows'
+        run: |
+          choco install sqlite
 
-        - name: Build SQLite (Unix)
-          if: matrix.os != 'windows'
-          run: |
-            cd sqlite
-            if [ ! -d "sqlite-latest" ]; then
-              # Download and extract SQLite source if not present
-              curl -O https://www.sqlite.org/2024/sqlite-autoconf-3450100.tar.gz
-              tar xzf sqlite-autoconf-3450100.tar.gz
-              mv sqlite-autoconf-3450100 sqlite-latest
-            fi
-            cd sqlite-latest
-            ./configure --prefix=$(pwd)/../install --enable-static --disable-shared "CFLAGS=-DSQLITE_ENABLE_DBPAGE_VTAB=1 -O2"
-            make
-            make install
+      - name: Build SQLite (Unix)
+        if: matrix.os != 'windows'
+        run: |
+          cd sqlite
+          if [ ! -d "sqlite-latest" ]; then
+            # Download and extract SQLite source if not present
+            curl -O https://www.sqlite.org/2024/sqlite-autoconf-3450100.tar.gz
+            tar xzf sqlite-autoconf-3450100.tar.gz
+            mv sqlite-autoconf-3450100 sqlite-latest
+          fi
+          cd sqlite-latest
+          ./configure --prefix=$(pwd)/../install --enable-static --disable-shared "CFLAGS=-DSQLITE_ENABLE_DBPAGE_VTAB=1 -O2"
+          make
+          make install
 
-        - name: Build SQLite (Windows)
-          if: matrix.os == 'windows'
-          run: |
-            cd sqlite
-            if (!(Test-Path "sqlite-latest")) {
-              Invoke-WebRequest -Uri "https://www.sqlite.org/2024/sqlite-autoconf-3450100.tar.gz" -OutFile "sqlite-autoconf-3450100.tar.gz"
-              tar -xzf sqlite-autoconf-3450100.tar.gz
-              Rename-Item sqlite-autoconf-3450100 sqlite-latest
-            }
-            cd sqlite-latest
-            # Use MSYS2/MinGW for Windows build
-            bash -c "./configure --prefix=$(pwd)/../install --enable-static --disable-shared 'CFLAGS=-DSQLITE_ENABLE_DBPAGE_VTAB=1 -O2'"
-            bash -c "make"
-            bash -c "make install"
+      - name: Build SQLite (Windows)
+        if: matrix.os == 'windows'
+        run: |
+          cd sqlite
+          if (!(Test-Path "sqlite-latest")) {
+            Invoke-WebRequest -Uri "https://www.sqlite.org/2024/sqlite-autoconf-3450100.tar.gz" -OutFile "sqlite-autoconf-3450100.tar.gz"
+            tar -xzf sqlite-autoconf-3450100.tar.gz
+            Rename-Item sqlite-autoconf-3450100 sqlite-latest
+          }
+          cd sqlite-latest
+          # Use MSYS2/MinGW for Windows build
+          bash -c "./configure --prefix=$(pwd)/../install --enable-static --disable-shared 'CFLAGS=-DSQLITE_ENABLE_DBPAGE_VTAB=1 -O2'"
+          bash -c "make"
+          bash -c "make install"
 
-        - name: Build Bridge
-          run: |
-            cd bridge
-            make
+      - name: Build Bridge
+        run: |
+          cd bridge
+          make
 
-        - name: Set build environment (Darwin ARM64)
-          if: matrix.os == 'darwin' && matrix.arch == 'arm64'
-          run: |
-            echo "GOOS=darwin" >> $GITHUB_ENV
-            echo "GOARCH=arm64" >> $GITHUB_ENV
-            echo "CGO_ENABLED=1" >> $GITHUB_ENV
+      - name: Set build environment (Darwin ARM64)
+        if: matrix.os == 'darwin' && matrix.arch == 'arm64'
+        run: |
+          echo "GOOS=darwin" >> $GITHUB_ENV
+          echo "GOARCH=arm64" >> $GITHUB_ENV
+          echo "CGO_ENABLED=1" >> $GITHUB_ENV
 
-        - name: Set build environment (Darwin AMD64)
-          if: matrix.os == 'darwin' && matrix.arch == 'amd64'
-          run: |
-            echo "GOOS=darwin" >> $GITHUB_ENV
-            echo "GOARCH=amd64" >> $GITHUB_ENV
-            echo "CGO_ENABLED=1" >> $GITHUB_ENV
+      - name: Set build environment (Darwin AMD64)
+        if: matrix.os == 'darwin' && matrix.arch == 'amd64'
+        run: |
+          echo "GOOS=darwin" >> $GITHUB_ENV
+          echo "GOARCH=amd64" >> $GITHUB_ENV
+          echo "CGO_ENABLED=1" >> $GITHUB_ENV
 
-        - name: Set build environment (Linux x86_64)
-          if: matrix.os == 'linux' && matrix.arch == 'x86_64'
-          run: |
-            echo "GOOS=linux" >> $GITHUB_ENV
-            echo "GOARCH=amd64" >> $GITHUB_ENV
-            echo "CGO_ENABLED=1" >> $GITHUB_ENV
+      - name: Set build environment (Linux x86_64)
+        if: matrix.os == 'linux' && matrix.arch == 'x86_64'
+        run: |
+          echo "GOOS=linux" >> $GITHUB_ENV
+          echo "GOARCH=amd64" >> $GITHUB_ENV
+          echo "CGO_ENABLED=1" >> $GITHUB_ENV
 
-        - name: Set build environment (Windows)
-          if: matrix.os == 'windows'
-          run: |
-            echo "GOOS=windows" >> $env:GITHUB_ENV
-            echo "GOARCH=amd64" >> $env:GITHUB_ENV
-            echo "CGO_ENABLED=1" >> $env:GITHUB_ENV
+      - name: Set build environment (Windows)
+        if: matrix.os == 'windows'
+        run: |
+          echo "GOOS=windows" >> $env:GITHUB_ENV
+          echo "GOARCH=amd64" >> $env:GITHUB_ENV
+          echo "CGO_ENABLED=1" >> $env:GITHUB_ENV
 
-        - name: Build Client (Unix)
-          if: matrix.os != 'windows'
-          run: |
-            cd client
-            make build
+      - name: Build Client (Unix)
+        if: matrix.os != 'windows'
+        run: |
+          cd client
+          make build
 
-        - name: Build Client (Windows)
-          if: matrix.os == 'windows'
-          run: |
-            cd client
-            # Use make with MSYS2/MinGW
-            bash -c "make build"
+      - name: Build Client (Windows)
+        if: matrix.os == 'windows'
+        run: |
+          cd client
+          # Use make with MSYS2/MinGW
+          bash -c "make build"
 
-        - name: Create release directory
-          run: |
-            mkdir -p release
+      - name: Create release directory
+        run: |
+          mkdir -p release
 
-        - name: Package binary (Unix)
-          if: matrix.os != 'windows'
-          run: |
-            if [ "${{ matrix.os }}" = "darwin" ] && [ "${{ matrix.arch }}" = "arm64" ]; then
-              BINARY_NAME="sqlrsync-${{ matrix.os }}-${{ matrix.arch }}"
-            else
-              BINARY_NAME="sqlrsync-${{ matrix.os }}-${{ matrix.arch }}"
-            fi
-            cp client/bin/sqlrsync release/${BINARY_NAME}
+      - name: Package binary (Unix)
+        if: matrix.os != 'windows'
+        run: |
+          if [ "${{ matrix.os }}" = "darwin" ] && [ "${{ matrix.arch }}" = "arm64" ]; then
+            BINARY_NAME="sqlrsync-${{ matrix.os }}-${{ matrix.arch }}"
+          else
+            BINARY_NAME="sqlrsync-${{ matrix.os }}-${{ matrix.arch }}"
+          fi
+          cp client/bin/sqlrsync release/${BINARY_NAME}
 
-        - name: Package binary (Windows)
-          if: matrix.os == 'windows'
-          run: |
-            $BINARY_NAME = "sqlrsync-${{ matrix.os }}-${{ matrix.arch }}.exe"
-            Copy-Item "client/bin/sqlrsync.exe" "release/$BINARY_NAME"
+      - name: Package binary (Windows)
+        if: matrix.os == 'windows'
+        run: |
+          $BINARY_NAME = "sqlrsync-${{ matrix.os }}-${{ matrix.arch }}.exe"
+          Copy-Item "client/bin/sqlrsync.exe" "release/$BINARY_NAME"
 
-        - name: Upload artifacts
-          uses: actions/upload-artifact@v4
-          with:
-            name: sqlrsync-${{ matrix.os }}-${{ matrix.arch }}
-            path: release/*
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sqlrsync-${{ matrix.os }}-${{ matrix.arch }}
+          path: release/*
 
   release:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
