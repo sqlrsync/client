@@ -1,16 +1,25 @@
 name: Multi-Platform Build
-
 on:
-  push:
-    branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches:
+      - main
+      - "v*"
   release:
     types: [published]
 
 jobs:
+  securityIntention:
+    name: Security Intention
+    runs-on: ubuntu-latest
+    steps:
+      - name: Security Intention
+        run: |
+          echo "This workflow is intended to build the project in a secure manner:"
+          echo " - Only installs absolutely essential and trusted dependencies. (steps \"Install *\")"
+          echo " - Uses HTTPS for direct package downloads"
+          echo " - Only uses official Github Actions \"actions/*\""
   build:
-    name: Build for ${{ matrix.os }}
+    name: Build for ${{ matrix.os }}-${{matrix.arch}}
     runs-on: ${{ matrix.runs-on }}
     strategy:
       matrix:
@@ -24,15 +33,7 @@ jobs:
           - os: linux
             runs-on: ubuntu-latest
             arch: x86_64
-
     steps:
-      - name: Security Intention
-        run: |
-          echo "This workflow is intended to build the project in a secure manner:"
-          echo " - Only installs absolutely essential and trusted dependencies. (steps \"Install *\")"
-          echo " - Uses HTTPS for direct package downloads"
-          echo " - Only uses official Github Actions \"actions/*\""
-          
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -133,6 +134,66 @@ jobs:
           # Use make with MSYS2/MinGW
           bash -c "make build"
 
+      - name: Test sqlrsync --version
+        run: |
+          echo "Testing sqlrsync --version..."
+          ./client/bin/sqlrsync --version
+
+      - name: Test sqlrsync help
+        run: |
+          echo "Testing sqlrsync help..."
+          ./client/bin/sqlrsync || true
+
+      - name: Test sqlrsync with usgs.gov/earthquakes.db
+        run: |
+          echo "Testing sqlrsync usgs.gov/earthquakes.db..."
+          ./client/bin/sqlrsync usgs.gov/earthquakes.db
+
+      - name: Test sqlrsync with subscribe for 10 seconds (Linux)
+        if: matrix.os == 'linux'
+        run: |
+          echo "Testing sqlrsync usgs.gov/earthquakes.db --subscribe for 10 seconds..."
+          timeout 10s ./client/bin/sqlrsync usgs.gov/earthquakes.db --subscribe > subscribe_output.log 2>&1 || true
+
+      - name: Test sqlrsync with subscribe for 10 seconds (macOS)
+        if: matrix.os == 'darwin'
+        run: |
+          echo "Testing sqlrsync usgs.gov/earthquakes.db --subscribe for 10 seconds..."
+          # macOS doesn't have timeout, use gtimeout or alternative
+          if command -v gtimeout &> /dev/null; then
+            gtimeout 10s ./client/bin/sqlrsync usgs.gov/earthquakes.db --subscribe > subscribe_output.log 2>&1 || true
+          else
+            # Fallback: run in background and kill after 10 seconds
+            ./client/bin/sqlrsync usgs.gov/earthquakes.db --subscribe > subscribe_output.log 2>&1 &
+            PID=$!
+            sleep 10
+            kill $PID 2>/dev/null || true
+            wait $PID 2>/dev/null || true
+          fi
+
+      - name: Test sqlrsync with subscribe for 10 seconds (Windows)
+        if: matrix.os == 'windows'
+        run: |
+          echo "Testing sqlrsync usgs.gov/earthquakes.db --subscribe for 10 seconds..."
+          # Windows doesn't have timeout, use PowerShell equivalent
+          $job = Start-Job { ./client/bin/sqlrsync.exe usgs.gov/earthquakes.db --subscribe }
+          Wait-Job $job -Timeout 10
+          Stop-Job $job
+          Receive-Job $job > subscribe_output.log 2>&1 || $true
+
+      - name: Verify subscribe output (Unix)
+        if: matrix.os != 'windows'
+        run: |
+          echo "Checking for 'Sync complete' in output..."
+          cat subscribe_output.log
+          if grep -q "Sync complete" subscribe_output.log; then
+            echo "✅ SUCCESS: Found 'Sync complete' in output"
+          else
+            echo "❌ FAILURE: 'Sync complete' not found in output"
+            echo "Full output:"
+            cat subscribe_output.log
+            exit 1
+          fi
       - name: Create release directory
         run: |
           mkdir -p release
@@ -162,7 +223,7 @@ jobs:
   release:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: build
-    permissions: 
+    permissions:
       contents: write
       packages: write
       issues: write
@@ -170,39 +231,39 @@ jobs:
       actions: write
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
-    
-    - name: Extract version from main.go
-      id: extract-version
-      run: |
-        VERSION=$(grep 'var VERSION = ' client/main.go | sed 's/var VERSION = "\(.*\)"/\1/')
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-        echo "Extracted version: $VERSION"
-    
-    - name: Check if tag exists
-      id: tag-check
-      run: |
-        VERSION=${{ steps.extract-version.outputs.version }}
-        if git rev-parse "v$VERSION" >/dev/null 2>&1; then
-          echo "Tag v$VERSION already exists"
-          echo "tag-created=false" >> $GITHUB_OUTPUT
-        else
-          echo "Tag v$VERSION does not exist, will create"
-          echo "tag-created=true" >> $GITHUB_OUTPUT
-        fi
-    
-    - name: Download all release artifacts
-      if:  steps.tag-check.outputs.tag-created == 'true'
-      uses: actions/download-artifact@v5
-    
-    - name: Create tag and GitHub Release, attach artifact
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        TAG=v${{ steps.extract-version.outputs.version }}
-        git config user.name "${{ github.actor }}"
-        git config user.email "${{ github.actor }}@users.noreply.github.com"
-        git tag -a $TAG -m "Release $TAG"
-        git push origin $TAG
-        # create the release and attach the artifact (gh CLI)
-        gh release create $TAG --generate-notes sqlrsync-*/sqlrsync-*
+      - uses: actions/checkout@v5
+
+      - name: Extract version from main.go
+        id: extract-version
+        run: |
+          VERSION=$(grep 'var VERSION = ' client/main.go | sed 's/var VERSION = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION"
+
+      - name: Check if tag exists
+        id: tag-check
+        run: |
+          VERSION=${{ steps.extract-version.outputs.version }}
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "Tag v$VERSION already exists"
+            echo "tag-created=false" >> $GITHUB_OUTPUT
+          else
+            echo "Tag v$VERSION does not exist, will create"
+            echo "tag-created=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download all release artifacts
+        if: steps.tag-check.outputs.tag-created == 'true'
+        uses: actions/download-artifact@v5
+
+      - name: Create tag and GitHub Release, attach artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=v${{ steps.extract-version.outputs.version }}
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          git tag -a $TAG -m "Release $TAG"
+          git push origin $TAG
+          # create the release and attach the artifact (gh CLI)
+          gh release create $TAG --generate-notes sqlrsync-*/sqlrsync-*

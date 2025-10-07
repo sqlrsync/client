@@ -65,6 +65,36 @@ func cgoGetDatabaseInfo(dbPath string) (*DatabaseInfo, error) {
 
 	return info, nil
 }
+// SQLRSYNC
+// CheckIntegrity checks the database integrity using PRAGMA integrity_check
+func CheckIntegrity(dbPath string) (bool, string, error) {
+	return cgoCheckIntegrity(dbPath)
+}
+
+// SQLRSYNC
+// cgoCheckIntegrity checks the database integrity using PRAGMA integrity_check
+func cgoCheckIntegrity(dbPath string) (bool, string, error) {
+	cDbPath := C.CString(dbPath)
+	defer C.free(unsafe.Pointer(cDbPath))
+
+	const errorMsgSize = 1024
+	errorMsg := make([]byte, errorMsgSize)
+	cErrorMsg := (*C.char)(unsafe.Pointer(&errorMsg[0]))
+
+	result := C.sqlite_rsync_check_integrity(cDbPath, cErrorMsg, C.int(errorMsgSize))
+	
+	switch result {
+	case 0:
+		return true, "", nil // Database is OK
+	case 1:
+		return false, C.GoString(cErrorMsg), nil // Database is corrupted
+	default:
+		return false, C.GoString(cErrorMsg), &SQLiteRsyncError{
+			Code:    int(result),
+			Message: "failed to check database integrity",
+		}
+	}
+}
 
 // RunOriginSync wraps the C function to run origin synchronization
 func RunOriginSync(dbPath string, dryRun bool, client *BridgeClient) error {

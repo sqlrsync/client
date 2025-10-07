@@ -78,6 +78,10 @@ extern "C"
 
   int sqlite_rsync_get_db_info(const char *db_path, sqlite_db_info_t *info);
 
+  // SQLRSYNC: Check database integrity using PRAGMA integrity_check
+  // Returns 0 if OK, 1 if corrupted, -1 on error
+  int sqlite_rsync_check_integrity(const char *db_path, char *error_msg, int error_msg_size);
+
   // Cleanup resources
   void sqlite_rsync_cleanup(void);
 

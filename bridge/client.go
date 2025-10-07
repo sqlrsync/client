@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"fmt"
+	"os"
 
 	"go.uber.org/zap"
 )
@@ -70,6 +71,28 @@ func (c *BridgeClient) GetDatabaseInfo() (*DatabaseInfo, error) {
 	return info, nil
 }
 
+// CheckIntegrity checks the database integrity using PRAGMA integrity_check
+func (c *BridgeClient) CheckIntegrity() {
+	c.Logger.Debug("Checking database integrity", zap.String("path", c.Config.DatabasePath))
+
+	if _, err := os.Stat(c.Config.DatabasePath); os.IsNotExist(err) {
+		c.Logger.Fatal("database file does not exist", zap.String("path", c.Config.DatabasePath))
+	}
+
+	isOk, errorMsg, err := CheckIntegrity(c.Config.DatabasePath)
+	if err != nil {
+		c.Logger.Fatal("fatal error while checking integrity", zap.Error(err))
+	}
+
+	if !isOk {
+		c.Logger.Fatal("database integrity check failed",
+			zap.String("database", c.Config.DatabasePath),
+			zap.String("error", errorMsg))
+	}
+
+	c.Logger.Debug("Database integrity check passed", zap.String("database", c.Config.DatabasePath))
+}
+
 // RunPushSync runs the origin-side synchronization with provided I/O functions
 func (c *BridgeClient) RunPushSync(readFunc ReadFunc, writeFunc WriteFunc) error {
 	c.Logger.Info("Starting origin sync", zap.String("database", c.Config.DatabasePath))
@@ -117,7 +140,7 @@ func (c *BridgeClient) RunPullSync(readFunc ReadFunc, writeFunc WriteFunc) error
 		return err
 	}
 
-	c.Logger.Info("Replica sync completed successfully")
+	c.Logger.Info("Replica sync completed")
 	return nil
 }
 
