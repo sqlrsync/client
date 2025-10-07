@@ -19,7 +19,7 @@ jobs:
           echo " - Uses HTTPS for direct package downloads"
           echo " - Only uses official Github Actions \"actions/*\""
   build:
-    name: Build for ${{ matrix.os }}
+    name: Build for ${{ matrix.os }}-${{matrix.arch}}
     runs-on: ${{ matrix.runs-on }}
     strategy:
       matrix:
