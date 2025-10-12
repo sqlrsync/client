@@ -1461,6 +1461,22 @@ func (c *Client) readLoop() {
 					return
 				}
 			}
+			// Don't queue this message for normal reading
+			continue
+		}
+
+		// Handle progress tracking in read loop
+		if c.config.ProgressCallback != nil {
+			c.inspector.InspectForProgress(data, "IN (Server → Client)", func(event SyncProgressEvent) {
+				c.handleProgressEvent(event)
+			}, c.config.EnableTrafficInspection)
+		}
+		// Queue the data for reading
+		select {
+		case c.readQueue <- data:
+			c.logger.Debug("Data queued for reading", zap.Int("bytes", len(data)))
+		case <-c.ctx.Done():
+			return
 		}
 	}
 }
