@@ -469,6 +469,14 @@ func (c *Coordinator) executePush() error {
 	// Check database integrity before pushing
 	localClient.CheckIntegrity()
 
+	fileInfo, err := os.Stat(c.config.LocalPath)
+	if err != nil {
+		return fmt.Errorf("failed to stat local file: %w", err)
+	}
+	fileSize := fileInfo.Size()
+	if( fileSize > 100*1024*1024 ) {
+		fmt.Printf("⚠️  Warning: The database file is large (%.2f MB) for SQLRsync.com and so the behavior and performance is untested.\n", float64(fileSize)/(1024*1024))
+	}
 
 	// Resolve authentication
 	authResult, err := c.resolveAuth("push")
