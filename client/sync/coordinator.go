@@ -390,7 +390,10 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 
 	// Connect to remote server
 	if err := remoteClient.Connect(); err != nil {
-		if (strings.Contains(err.Error(), "key is not authorized") || strings.Contains(err.Error(), "404 Path not found")) && authResult.AccessKey == "" {
+		// I removed the check if the authkey is empty because they
+		// might have provided the wrong key and let's give them a
+		// chance to fix that.
+		if strings.Contains(err.Error(), "key is not authorized") || strings.Contains(err.Error(), "404 Path not found") {
 			key, err := c.authResolver.PromptForKey(c.config.ServerURL, c.config.RemotePath, "PULL")
 			if err != nil {
 				return fmt.Errorf("coordinator failed to get key interactively: %w", err)
@@ -538,6 +541,14 @@ func (c *Coordinator) executePush() error {
 
 	// Connect to remote server
 	if err := remoteClient.Connect(); err != nil {
+		if strings.Contains(err.Error(), "key is not authorized") || strings.Contains(err.Error(), "404 Path not found") {
+			key, err := subscription.PromptForKey(serverURL, remotePath, "PULL")
+			if err != nil || key == "" {
+				return fmt.Errorf("manager failed to get key interactively: %w", err)
+			}
+			authResult.AccessKey = key
+			return c.executePush()
+		}
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}
 
@@ -778,6 +789,16 @@ func (c *Coordinator) executePushSubscribe() error {
 	defer c.remoteClient.Close()
 
 	if err := c.remoteClient.Connect(); err != nil {
+		if strings.Contains(err.Error(), "key is not authorized") || strings.Contains(err.Error(), "404 Path not found") {
+			key, err := c.authResolver.PromptForKey(c.config.ServerURL, c.config.RemotePath, "PUSH")
+			if err != nil {
+				return fmt.Errorf("coordinator failed to get key interactively: %w", err)
+			}
+			c.config.ProvidedAuthKey = key
+
+			// We need to SendConfigCmd in the PUSH to get and store keys
+			return c.executePushSubscribe()
+		}
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}
 
