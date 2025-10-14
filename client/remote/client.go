@@ -17,6 +17,8 @@ import (
 	"go.uber.org/zap"
 )
 
+const FEATURE_PULL_CONFLICTDETECTION = false
+
 const (
 	SQLRSYNC_CONFIG            = 0x51 // Send to keys and replicaID
 	SQLRSYNC_NEWREPLICAVERSION = 0x52 // New version available
@@ -1325,7 +1327,7 @@ func (c *Client) readLoop() {
 
 							// Check if this is a version conflict error
 							// Format: "VERSION_CONFLICT:versionNumber"
-							if strings.HasPrefix(message, "VERSION_CONFLICT:") {
+							if FEATURE_PULL_CONFLICTDETECTION && strings.HasPrefix(message, "VERSION_CONFLICT:") {
 								latestVer := strings.TrimPrefix(message, "VERSION_CONFLICT:")
 								c.versionMu.Lock()
 								c.versionConflict = true
@@ -1574,6 +1576,9 @@ func (c *Client) GetKeyType() string {
 
 // HasVersionConflict returns true if a version conflict was detected
 func (c *Client) HasVersionConflict() bool {
+	if( FEATURE_PULL_CONFLICTDETECTION != true ) {
+		return false
+	}
 	c.versionMu.RLock()
 	defer c.versionMu.RUnlock()
 	return c.versionConflict
