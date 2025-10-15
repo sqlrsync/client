@@ -1576,7 +1576,7 @@ func (c *Client) GetKeyType() string {
 
 // HasVersionConflict returns true if a version conflict was detected
 func (c *Client) HasVersionConflict() bool {
-	if( FEATURE_PULL_CONFLICTDETECTION != true ) {
+	if FEATURE_PULL_CONFLICTDETECTION != true {
 		return false
 	}
 	c.versionMu.RLock()
