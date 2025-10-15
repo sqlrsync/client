@@ -1,8 +1,13 @@
 name: Multi-Platform Build
 on:
+  push:
+    branches:
+      - main
+      - beta
   pull_request:
     branches:
       - main
+      - beta
       - "v*"
   release:
     types: [published]
