@@ -17,11 +17,14 @@ import (
 	"go.uber.org/zap"
 )
 
+const FEATURE_PULL_CONFLICTDETECTION = false
+
 const (
 	SQLRSYNC_CONFIG            = 0x51 // Send to keys and replicaID
 	SQLRSYNC_NEWREPLICAVERSION = 0x52 // New version available
 	SQLRSYNC_KEYREQUEST        = 0x53 // request keys
 	SQLRSYNC_COMMITMESSAGE     = 0x54 // commit message
+	SQLRSYNC_CHANGED           = 0x55 // Write detected notification with duration
 )
 
 // ProgressPhase represents the current phase of the sync operation
@@ -404,6 +407,7 @@ type Config struct {
 	AuthKey                 string
 	ClientVersion           string // version of the client software
 	SendKeyRequest          bool   // the -sqlrsync file doesn't exist, so make a key
+	AuthToken               string
 
 	SendConfigCmd     bool // we don't have the version number or remote path
 	LocalHostname     string
@@ -451,10 +455,16 @@ type Client struct {
 	NewPullKey     string
 	NewPushKey     string
 	ReplicaID      string
-	Version        string
+	Version        string // needs to stay string because it can be `latest`
 	ReplicaPath    string
 	SetVisibility  int
+	KeyType        string // "PUSH" or "PULL" - indicates the type of key being used
 	newVersionChan chan struct{}
+
+	// Version conflict tracking
+	versionConflict bool
+	latestVersion   string
+	versionMu       sync.RWMutex
 
 	// Progress tracking
 	progress         *SyncProgress
@@ -687,6 +697,10 @@ func (c *Client) Connect() error {
 	headers := http.Header{}
 
 	headers.Set("Authorization", c.config.AuthKey)
+
+	// Set X-ClientID to the wsID from defaults config
+	wsID := c.config.WsID
+	headers.Set("X-ClientID", wsID)
 
 	headers.Set("X-ClientVersion", c.config.ClientVersion)
 
@@ -1427,7 +1441,7 @@ func (c *Client) writeLoop() {
 			// Inspect raw WebSocket outbound traffic
 			c.inspector.LogWebSocketTraffic(data, "OUT (Client → Server)", c.config.EnableTrafficInspection)
 
-			// For a PULL with no existing data we need to send this before writes, however I imagine this needs 
+			// For a PULL with no existing data we need to send this before writes, however I imagine this needs
 			// to go after ORIGIN_BEGIN for a PUSH with existing data.
 			if c.config.SendConfigCmd {
 				conn.WriteMessage(websocket.BinaryMessage, []byte{SQLRSYNC_CONFIG})
@@ -1452,7 +1466,6 @@ func (c *Client) writeLoop() {
 				return
 			}
 
-
 			c.logger.Debug("Sent message to remote", zap.Int("bytes", len(data)))
 		}
 	}
@@ -1466,14 +1479,65 @@ func (c *Client) GetNewPushKey() string {
 	return c.NewPushKey
 }
 
+// SendChangedNotification sends SQLRSYNC_CHANGED message with duration until push
+func (c *Client) SendChangedNotification(durationSeconds uint32) error {
+	// Message format: [0x57][duration: 4 bytes as seconds]
+	msg := make([]byte, 5)
+	msg[0] = SQLRSYNC_CHANGED
+
+	// Duration in seconds (4 bytes, little-endian)
+	msg[1] = byte(durationSeconds)
+	msg[2] = byte(durationSeconds >> 8)
+	msg[3] = byte(durationSeconds >> 16)
+	msg[4] = byte(durationSeconds >> 24)
+
+	// Send via write queue
+	select {
+	case c.writeQueue <- msg:
+		c.logger.Debug("Sent SQLRSYNC_CHANGED notification",
+			zap.Uint32("durationSeconds", durationSeconds))
+		return nil
+	default:
+		return fmt.Errorf("write queue full")
+	}
+}
+
 func (c *Client) GetReplicaID() string {
 	return c.ReplicaID
 }
 func (c *Client) GetReplicaPath() string {
 	return c.ReplicaPath
 }
-func (c *Client) GetVersion() string {
+func (c *Client) GetLatestCommitVersion() string {
 	return c.Version
+}
+func (c *Client) GetKeyType() string {
+	return c.KeyType
+}
+
+// HasVersionConflict returns true if a version conflict was detected
+func (c *Client) HasVersionConflict() bool {
+	if FEATURE_PULL_CONFLICTDETECTION != true {
+		return false
+	}
+	c.versionMu.RLock()
+	defer c.versionMu.RUnlock()
+	return c.versionConflict
+}
+
+// GetLatestVersion returns the latest version from server (if version conflict occurred)
+func (c *Client) GetLatestVersion() string {
+	c.versionMu.RLock()
+	defer c.versionMu.RUnlock()
+	return c.latestVersion
+}
+
+// ResetVersionConflict clears the version conflict flag
+func (c *Client) ResetVersionConflict() {
+	c.versionMu.Lock()
+	defer c.versionMu.Unlock()
+	c.versionConflict = false
+	c.latestVersion = ""
 }
 
 // WaitForNewVersion blocks until a new version notification is received (0x52)

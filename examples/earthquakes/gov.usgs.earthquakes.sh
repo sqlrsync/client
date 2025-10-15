@@ -6,10 +6,12 @@
 # Configuration
 FILE=earthquakes.db
 TABLE=earthquakes
-UPDATES=5m
+UPDATES=65s
 URL=https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_month.csv
 URL=https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.csv
-SQLRSYNC_PATH=usgs.gov/earthquakes.db
+
+# Disabled so we can use file watching
+#SQLRSYNC_PATH=usgs.gov/earthquakes.db
 PRIMARY_KEY=id
 MODE="INSERT OR REPLACE INTO"
 SCHEMA="time TEXT, latitude REAL, longitude REAL, depth REAL, mag REAL, magType TEXT, nst INTEGER, gap REAL, dmin REAL, rms REAL, net TEXT, id TEXT PRIMARY KEY, updated TEXT, place TEXT, type TEXT, horizontalError REAL, depthError REAL, magError REAL, magNst INTEGER, status TEXT, locationSource TEXT, magSource TEXT"
@@ -43,7 +45,7 @@ init_database() {
 
 # Download and import data with in-memory staging
 sync_data() {
-    echo "$(date): Downloading earthquake data from USGS..."
+    echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ"): Downloading earthquake data from USGS..."
     
     # Download CSV data
     local temp_file=$(mktemp)
@@ -64,16 +66,15 @@ ATTACH DATABASE "$FILE" AS c;
 
 CREATE TABLE IF NOT EXISTS c.$TABLE ($SCHEMA);
 
-INSERT OR REPLACE INTO c.$TABLE SELECT * FROM incoming;
+INSERT OR IGNORE INTO c.$TABLE SELECT * FROM incoming;
 
-SELECT CHANGES() AS CHANGED;
 DETACH DATABASE c;
 EOF
         
         if [ $? -eq 0 ]; then
             local count_after=$(sqlite3 "$FILE" "SELECT COUNT(*) FROM $TABLE;")
             local new_records=$((count_after - count_before))
-            echo "Data imported successfully. Total records: $count_after (added/updated: $new_records)"
+            echo "Data imported successfully. Total records: $count_after (added $new_records)"
             
             # Show some recent earthquake info
             echo "Recent earthquakes:"
@@ -126,6 +127,7 @@ main() {
     while true; do
         echo "Sleeping for $UPDATES ($sleep_seconds seconds)..."
         sleep "$sleep_seconds"
+        echo ""
         sync_data
     done
 }

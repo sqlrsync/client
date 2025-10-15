@@ -231,20 +231,6 @@ func (m *Manager) doConnect() error {
 				}
 			}
 
-			// Connect to remote server
-			if strings.Contains(err.Error(), "key is not authorized") || strings.Contains(err.Error(), "404 Path not found") {
-				if m.config.AccessKey == "" {
-					key, err := PromptForKey(m.config.ServerURL, m.config.ReplicaPath, "PULL")
-					if err != nil {
-						return fmt.Errorf("manager failed to get key interactively: %w", err)
-					}
-					m.config.AccessKey = key
-					return m.doConnect()
-				} else {
-					return fmt.Errorf("manager failed to connect to server: %w", err)
-				}
-			}
-
 			// Create a clean error message
 			var errorMsg strings.Builder
 			errorMsg.WriteString(fmt.Sprintf("HTTP %d (%s)", statusCode, statusText))
@@ -281,6 +267,15 @@ func (m *Manager) doConnect() error {
 		}
 
 		errorMsg.WriteString(fmt.Sprintf("\nOriginal error: %v", err))
+
+		if strings.Contains(err.Error(), "key is not authorized") || strings.Contains(err.Error(), "404 Path not found") {
+			key, err := PromptForKey(m.config.ServerURL, m.config.ReplicaPath, "PULL")
+			if err != nil || key == "" {
+				return fmt.Errorf("manager failed to get key interactively: %w", err)
+			}
+			m.config.AccessKey = key
+			return m.doConnect()
+		}
 
 		return fmt.Errorf("%s", errorMsg.String())
 	}
