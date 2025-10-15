@@ -17,6 +17,7 @@ import (
 	"github.com/sqlrsync/sqlrsync.com/bridge"
 	"github.com/sqlrsync/sqlrsync.com/remote"
 	"github.com/sqlrsync/sqlrsync.com/subscription"
+	"github.com/sqlrsync/sqlrsync.com/watcher"
 )
 
 // Operation represents a sync operation type
@@ -25,7 +26,8 @@ type Operation int
 const (
 	OperationPull Operation = iota
 	OperationPush
-	OperationSubscribe
+	OperationPullSubscribe
+	OperationPushSubscribe
 	OperationLocalSync
 )
 
@@ -48,16 +50,25 @@ type CoordinatorConfig struct {
 	Verbose           bool
 	WsID              string // Websocket ID for client identification
 	ClientVersion     string // version of the client software
+	Subscribing       bool
+	WaitIdle          string
+	MaxInterval       string
+	MinInterval       string
+	AutoMerge         bool
 }
 
 // Coordinator manages sync operations and subscriptions
 type Coordinator struct {
-	config       *CoordinatorConfig
-	logger       *zap.Logger
-	authResolver *auth.Resolver
-	subManager   *subscription.Manager
-	ctx          context.Context
-	cancel       context.CancelFunc
+	config          *CoordinatorConfig
+	logger          *zap.Logger
+	authResolver    *auth.Resolver
+	subManager      *subscription.Manager
+	remoteClient    *remote.Client // For PUSH subscription mode
+	ctx             context.Context
+	cancel          context.CancelFunc
+	sessionStarted  bool        // Flag to track if we've sent initial SQLRSYNC_CHANGED for this session
+	lastChangedSent time.Time   // Track when we last sent SQLRSYNC_CHANGED
+	resendTimer     *time.Timer // Timer for resending SQLRSYNC_CHANGED 10s before expiration
 }
 
 // NewCoordinator creates a new sync coordinator
@@ -96,8 +107,10 @@ func (c *Coordinator) Execute() error {
 		return c.executePull(false)
 	case OperationPush:
 		return c.executePush()
-	case OperationSubscribe:
-		return c.executeSubscribe()
+	case OperationPullSubscribe:
+		return c.executePullSubscribe()
+	case OperationPushSubscribe:
+		return c.executePushSubscribe()
 	case OperationLocalSync:
 		return c.executeLocalSync()
 	default:
@@ -208,8 +221,9 @@ func (c *Coordinator) resolveAuth(operation string) (*auth.ResolveResult, error)
 	return result, nil
 }
 
-// executeSubscribe runs pull sync with subscription for new versions
-func (c *Coordinator) executeSubscribe() error {
+// executePullSubscribe runs pull sync with subscription for new versions
+func (c *Coordinator) executePullSubscribe() error {
+	fmt.Println("📡 PULL Subscribe mode enabled - will watch for new versions...")
 	fmt.Println("📡 Subscribe mode enabled - will watch for new versions...")
 	fmt.Println("   Press Ctrl+C to stop watching...")
 
@@ -274,7 +288,7 @@ func (c *Coordinator) executeSubscribe() error {
 			return fmt.Errorf("sync #%d failed: %w", syncCount, err)
 		}
 
-		fmt.Printf("✅ Sync complete. Waiting for new version...\n")
+		fmt.Printf("✅ Sync completed at %s. Waiting for new version...\n", time.Now().Format(time.RFC3339))
 
 		// Wait for new version or shutdown
 		select {
@@ -284,41 +298,19 @@ func (c *Coordinator) executeSubscribe() error {
 		default:
 		}
 
-		// Wait for new version notification
-		var version string
+		// PULL (read only) Subscribe: Wait for new version notification
 		for {
-			version, err = c.subManager.WaitForNewVersionMsg()
-			if err != nil {
-				// Check if this is a cancellation (graceful shutdown)
-				if strings.Contains(err.Error(), "cancelled") {
-					fmt.Println("Subscription stopped by user.")
-					return nil
+			if err := c.waitForVersionAndPull(false); err != nil {
+				// Check if this is a cancellation or reconnection failure (both are terminal)
+				if strings.Contains(err.Error(), "cancelled") || strings.Contains(err.Error(), "reconnection failed") {
+					return err
 				}
-
-				// Check if this is a permanent reconnection failure
-				if strings.Contains(err.Error(), "reconnection failed") {
-					fmt.Printf("❌ Failed to maintain connection to subscription service: %v\n", err)
-					fmt.Println("   Please check your network connection and try again later.")
-					return fmt.Errorf("subscription connection lost: %w", err)
-				}
-
-				c.logger.Error("Subscription error", zap.Error(err))
-				return fmt.Errorf("subscription error: %w", err)
-			}
-			if c.config.Version == version {
-				fmt.Printf("ℹ️  Already at version %s, waiting for next update...\n", version)
+				// For other errors, continue the loop to try again
 				continue
-			} else {
-				break
 			}
+			// Successfully got and processed a new version, break out of version wait loop
+			break
 		}
-
-		fmt.Printf("🔄 New version %s announced!\n", version)
-		// Update version for next sync
-		if version != "latest" {
-			c.config.Version = version
-		}
-
 	}
 }
 
@@ -398,7 +390,10 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 
 	// Connect to remote server
 	if err := remoteClient.Connect(); err != nil {
-		if (strings.Contains(err.Error(), "key is not authorized") || strings.Contains(err.Error(), "404 Path not found")) && authResult.AccessKey == "" {
+		// I removed the check if the authkey is empty because they
+		// might have provided the wrong key and let's give them a
+		// chance to fix that.
+		if strings.Contains(err.Error(), "key is not authorized") || strings.Contains(err.Error(), "404 Path not found") {
 			key, err := c.authResolver.PromptForKey(c.config.ServerURL, c.config.RemotePath, "PULL")
 			if err != nil {
 				return fmt.Errorf("coordinator failed to get key interactively: %w", err)
@@ -431,7 +426,7 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 	// Check database integrity after pull
 	localClient.CheckIntegrity()
 
-	c.config.Version = remoteClient.GetVersion()
+	c.config.Version = remoteClient.GetLatestCommitVersion()
 	// Save pull result if needed
 	if remoteClient.GetNewPullKey() != "" && c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath) {
 		if err := c.authResolver.SavePullResult(
@@ -469,6 +464,14 @@ func (c *Coordinator) executePush() error {
 	// Check database integrity before pushing
 	localClient.CheckIntegrity()
 
+	fileInfo, err := os.Stat(c.config.LocalPath)
+	if err != nil {
+		return fmt.Errorf("failed to stat local file: %w", err)
+	}
+	fileSize := fileInfo.Size()
+	if fileSize > 100*1024*1024 {
+		fmt.Printf("⚠️  Warning: The database file is large (%.2f MB) for SQLRsync.com and so the behavior and performance is untested.\n", float64(fileSize)/(1024*1024))
+	}
 
 	// Resolve authentication
 	authResult, err := c.resolveAuth("push")
@@ -538,13 +541,42 @@ func (c *Coordinator) executePush() error {
 
 	// Connect to remote server
 	if err := remoteClient.Connect(); err != nil {
+		if strings.Contains(err.Error(), "key is not authorized") || strings.Contains(err.Error(), "404 Path not found") {
+			key, err := subscription.PromptForKey(serverURL, remotePath, "PULL")
+			if err != nil || key == "" {
+				return fmt.Errorf("manager failed to get key interactively: %w", err)
+			}
+			authResult.AccessKey = key
+			return c.executePush()
+		}
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}
 
 	// Perform the sync
 	if err := c.performPushSync(localClient, remoteClient); err != nil {
-		return fmt.Errorf("push synchronization failed: %w", err)
+
+		// Check if this was a version conflict and auto-merge is enabled
+		if remoteClient.HasVersionConflict() && c.config.AutoMerge {
+			latestVersion := remoteClient.GetLatestVersion()
+			fmt.Printf("🔄 Auto-merge enabled - attempting to merge with server version %s...\n", latestVersion)
+
+			if mergeErr := c.executeAutoMerge(localClient, remoteClient, latestVersion); mergeErr != nil {
+				return fmt.Errorf("auto-merge failed: %w", mergeErr)
+			}
+
+			// Auto-merge succeeded, retry the push
+			fmt.Println("✅ Auto-merge successful - retrying PUSH...")
+			remoteClient.ResetVersionConflict()
+
+			if err := c.performPushSync(localClient, remoteClient); err != nil {
+				return fmt.Errorf("push after auto-merge failed: %w", err)
+			}
+		} else {
+			return fmt.Errorf("push synchronization failed: %w", err)
+		}
 	}
+
+	c.config.Version = remoteClient.GetLatestCommitVersion()
 
 	// Save push result if we got new keys
 	if remoteClient.GetNewPushKey() != "" {
@@ -672,6 +704,733 @@ func (c *Coordinator) executeLocalSync() error {
 	c.logger.Info("Local-to-local synchronization completed successfully")
 	fmt.Println("✅ Local sync completed")
 	return nil
+}
+
+// executePushSubscribe performs an initial push then watches for file changes to auto-push
+func (c *Coordinator) executePushSubscribe() error {
+	fmt.Println("📡 PUSH Subscribe mode enabled - will push on file changes...")
+	fmt.Println("   Press Ctrl+C to stop watching...")
+
+	// Parse duration strings
+	var waitIdleDuration, maxIntervalDuration, minIntervalDuration time.Duration
+	var err error
+
+	if c.config.WaitIdle == "" {
+		return fmt.Errorf("--waitIdle is required for PUSH subscription mode")
+	}
+
+	waitIdleDuration, err = ParseDuration(c.config.WaitIdle)
+	if err != nil {
+		return fmt.Errorf("invalid --waitIdle: %w", err)
+	}
+
+	if err := ValidateWaitIdle(waitIdleDuration); err != nil {
+		return fmt.Errorf("invalid --waitIdle: %w", err)
+	}
+
+	if c.config.MaxInterval != "" {
+		maxIntervalDuration, err = ParseDuration(c.config.MaxInterval)
+		if err != nil {
+			return fmt.Errorf("invalid --maxInterval: %w", err)
+		}
+	}
+
+	if c.config.MinInterval != "" {
+		minIntervalDuration, err = ParseDuration(c.config.MinInterval)
+		if err != nil {
+			return fmt.Errorf("invalid --minInterval: %w", err)
+		}
+	} else if c.config.MaxInterval != "" {
+		// Default minInterval to half of maxInterval
+		minIntervalDuration = maxIntervalDuration / 2
+	}
+
+	// Perform initial PUSH
+	fmt.Println("🔄 Performing initial PUSH...")
+	if err := c.executePush(); err != nil {
+		return fmt.Errorf("initial PUSH failed: %w", err)
+	}
+
+	lastPushTime := time.Now()
+	fmt.Println("✅ Initial PUSH complete")
+
+	// Check if we should continue with PUSH subscribe based on key type
+	// The server will tell us via CONFIG what type of key we're using
+
+	// Set up persistent remote client connection for sending CHANGED messages
+	fmt.Println("📡 Establishing persistent connection for change notifications...")
+
+	// Resolve authentication (same as in executePush)
+	authResult, err := c.resolveAuth("push")
+	if err != nil {
+		return fmt.Errorf("authentication failed: %w", err)
+	}
+
+	serverURL := authResult.ServerURL
+	if c.config.ServerURL != "" && c.config.ServerURL != "wss://sqlrsync.com" {
+		serverURL = c.config.ServerURL
+	}
+
+	remotePath := authResult.RemotePath
+	if c.config.RemotePath != "" {
+		remotePath = c.config.RemotePath
+	}
+
+	c.remoteClient, err = remote.New(&remote.Config{
+		ServerURL:               serverURL + "/sapi/push/" + remotePath,
+		PingPong:                true,
+		Timeout:                 60000,
+		AuthKey:                 authResult.AccessKey,
+		ClientVersion:           c.config.ClientVersion,
+		Logger:                  c.logger.Named("remote-notifications"),
+		EnableTrafficInspection: c.config.Verbose,
+		WsID:                    c.config.WsID, // Add websocket ID
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create remote client: %w", err)
+	}
+	defer c.remoteClient.Close()
+
+	if err := c.remoteClient.Connect(); err != nil {
+		if strings.Contains(err.Error(), "key is not authorized") || strings.Contains(err.Error(), "404 Path not found") {
+			key, err := c.authResolver.PromptForKey(c.config.ServerURL, c.config.RemotePath, "PUSH")
+			if err != nil {
+				return fmt.Errorf("coordinator failed to get key interactively: %w", err)
+			}
+			c.config.ProvidedAuthKey = key
+
+			// We need to SendConfigCmd in the PUSH to get and store keys
+			return c.executePushSubscribe()
+		}
+		return fmt.Errorf("failed to connect to server: %w", err)
+	}
+
+	// Wait briefly for CONFIG message to arrive with key type
+	time.Sleep(500 * time.Millisecond)
+
+	// Check key type - if it's a PULL key, we shouldn't be doing PUSH subscribe
+	keyType := c.remoteClient.GetKeyType()
+	if keyType == "PULL" {
+		fmt.Println("⚠️  Warning: Using a PULL key - ignoring --waitIdle/--maxInterval/--minInterval settings")
+		fmt.Println("   Switching to PULL subscription mode instead...")
+		return c.executePullSubscribe()
+	}
+
+	// Create file watcher
+	fileWatcher, err := watcher.NewWatcher(&watcher.Config{
+		DatabasePath:          c.config.LocalPath,
+		Logger:                c.logger.Named("watcher"),
+		WriteNotificationFunc: c.sendWriteNotification,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create file watcher: %w", err)
+	}
+	defer fileWatcher.Close()
+
+	if err := fileWatcher.Start(); err != nil {
+		return fmt.Errorf("failed to start file watcher: %w", err)
+	}
+
+	fmt.Printf("👀 Watching %s for changes...\n", c.config.LocalPath)
+	fmt.Printf("   Wait idle: %v\n", waitIdleDuration)
+	if maxIntervalDuration > 0 {
+		fmt.Printf("   Max interval: %v\n", maxIntervalDuration)
+	}
+	if minIntervalDuration > 0 {
+		fmt.Printf("   Min interval: %v\n", minIntervalDuration)
+	}
+
+	// Also set up subscription to listen for remote updates (bidirectional sync)
+	fmt.Println("📡 Setting up subscription for remote updates...")
+	c.subManager = subscription.NewManager(&subscription.ManagerConfig{
+		ServerURL:             serverURL,
+		ReplicaPath:           remotePath,
+		AccessKey:             authResult.AccessKey,
+		ReplicaID:             authResult.ReplicaID,
+		WsID:                  c.config.WsID,
+		ClientVersion:         c.config.ClientVersion,
+		Logger:                c.logger.Named("subscription"),
+		MaxReconnectAttempts:  20,              // Infinite reconnect attempts
+		InitialReconnectDelay: 5 * time.Second, // Start with 5 seconds delay
+		MaxReconnectDelay:     5 * time.Minute, // Cap at 5 minutes
+	})
+
+	// Connect to subscription service for pull notifications
+	if err := c.subManager.Connect(); err != nil {
+		c.logger.Warn("Failed to connect to subscription service for pull notifications", zap.Error(err))
+		fmt.Println("⚠️  Warning: Could not set up pull subscription - will only push changes")
+	} else {
+		defer c.subManager.Close()
+		fmt.Println("✅ Subscribed to remote updates - will pull new versions automatically")
+
+		// Start goroutine to handle pull notifications
+		go c.handlePullNotifications()
+	}
+
+	var waitTimer *time.Timer
+	resetCount := 0
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			fmt.Println("Subscription stopped by user.")
+			return nil
+
+		default:
+		}
+
+		// Check for maxInterval timeout even without file changes
+		if maxIntervalDuration > 0 && time.Since(lastPushTime) >= maxIntervalDuration {
+			fmt.Printf("⏰ Max interval (%v) reached - pushing...\n", maxIntervalDuration)
+
+			if waitTimer != nil {
+				waitTimer.Stop()
+				waitTimer = nil
+			}
+
+			if err := c.executePushWithRetry(); err != nil {
+				c.logger.Error("PUSH failed", zap.Error(err))
+			} else {
+				lastPushTime = time.Now()
+				resetCount = 0
+			}
+			continue
+		}
+
+		// Wait for file change with timeout
+		changeTime, err := fileWatcher.WaitForChange()
+		if err != nil {
+			if strings.Contains(err.Error(), "cancelled") {
+				fmt.Println("Subscription stopped by user.")
+				return nil
+			}
+			return fmt.Errorf("file watcher error: %w", err)
+		}
+
+		timeSinceLastPush := time.Since(lastPushTime)
+
+		c.logger.Debug("File change detected",
+			zap.Time("changeTime", changeTime),
+			zap.Duration("timeSinceLastPush", timeSinceLastPush))
+
+		// Check if we should push immediately due to maxInterval
+		if maxIntervalDuration > 0 && timeSinceLastPush >= maxIntervalDuration {
+			fmt.Printf("⏰ Max interval (%v) reached - pushing immediately...\n", maxIntervalDuration)
+
+			if waitTimer != nil {
+				waitTimer.Stop()
+				waitTimer = nil
+			}
+
+			if err := c.executePushWithRetry(); err != nil {
+				c.logger.Error("PUSH failed", zap.Error(err))
+				// Continue watching despite error
+			} else {
+				lastPushTime = time.Now()
+				resetCount = 0
+			}
+			continue
+		}
+
+		// Calculate timer duration: MAX(minInterval - timeSinceLastPush, waitIdle)
+		timerDuration := waitIdleDuration
+		if minIntervalDuration > 0 {
+			remainingMinInterval := minIntervalDuration - timeSinceLastPush
+			if remainingMinInterval > timerDuration {
+				timerDuration = remainingMinInterval
+			}
+		}
+
+		c.logger.Debug("Calculated timer duration",
+			zap.Duration("timerDuration", timerDuration),
+			zap.Duration("waitIdle", waitIdleDuration),
+			zap.Duration("minInterval", minIntervalDuration),
+			zap.Duration("timeSinceLastPush", timeSinceLastPush))
+
+		// Reset or start the wait timer
+		if waitTimer != nil {
+			waitTimer.Stop()
+			resetCount++
+		} else {
+			resetCount = 0
+		}
+
+		c.logger.Debug("Starting wait timer", zap.Duration("duration", timerDuration))
+		waitTimer = time.AfterFunc(timerDuration, func() {
+			fmt.Printf("⏰ Timer expired after %v - pushing changes...\n", timerDuration)
+
+			if err := c.executePushWithRetry(); err != nil {
+				c.logger.Error("PUSH failed", zap.Error(err))
+			} else {
+				lastPushTime = time.Now()
+				resetCount = 0
+			}
+		})
+	}
+}
+
+// executePushWithRetry executes a push with exponential backoff on failure
+func (c *Coordinator) executePushWithRetry() error {
+	const maxRetries = 5
+	delay := 5 * time.Second
+
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			c.logger.Info("Retrying PUSH", zap.Int("attempt", attempt+1), zap.Duration("delay", delay))
+			time.Sleep(delay)
+			delay *= 2 // Exponential backoff
+		}
+
+		if err := c.executePush(); err != nil {
+			lastErr = err
+			c.logger.Warn("PUSH attempt failed", zap.Error(err), zap.Int("attempt", attempt+1))
+
+			// Report error to server if it's been more than 5 minutes of failures
+			if attempt == maxRetries-1 {
+				c.reportErrorToServer(err)
+			}
+			continue
+		}
+
+		// PUSH succeeded - reset session flag for next batch of changes
+		c.sessionStarted = false
+		if c.resendTimer != nil {
+			c.resendTimer.Stop()
+			c.resendTimer = nil
+		}
+
+		return nil
+	}
+
+	return fmt.Errorf("PUSH failed after %d attempts: %w", maxRetries, lastErr)
+}
+
+// reportErrorToServer sends error information to the server via HTTPS POST
+func (c *Coordinator) reportErrorToServer(err error) {
+	// TODO: Implement HTTPS POST to $server/sapi/$replicaID with error message
+	c.logger.Error("Reporting error to server (not yet implemented)", zap.Error(err))
+}
+
+// sendWriteNotification sends a write detection notification to the server
+// On first write: sends SQLRSYNC_CHANGED with waitIdle duration and sets sessionStarted=true
+// On subsequent writes: if resend timer isn't running, starts timer for (waitIdle - 10s) to resend
+func (c *Coordinator) sendWriteNotification(path string, timestamp time.Time) error {
+	if c.remoteClient == nil {
+		return nil // No remote client available yet
+	}
+
+	waitIdleDuration, err := ParseDuration(c.config.WaitIdle)
+	if err != nil {
+		return err
+	}
+
+	// If this is the first write of a session
+	if !c.sessionStarted {
+		// Send SQLRSYNC_CHANGED with waitIdle duration
+		if err := c.remoteClient.SendChangedNotification(uint32(waitIdleDuration.Seconds())); err != nil {
+			return fmt.Errorf("failed to send SQLRSYNC_CHANGED: %w", err)
+		}
+
+		c.sessionStarted = true
+		c.lastChangedSent = timestamp
+
+		c.logger.Debug("Sent initial SQLRSYNC_CHANGED",
+			zap.Duration("waitIdle", waitIdleDuration))
+
+		fmt.Printf("✏️  Detected local change at %s - will PUSH when idle for %v seconds.\n", timestamp.Format(time.RFC3339), waitIdleDuration.Seconds())
+
+		return nil
+	}
+
+	// Subsequent write - schedule resend 10 seconds before expiration if not already scheduled
+	if c.resendTimer == nil {
+		// Calculate when we need to resend: 10 seconds before the original would expire
+		timeSinceLastSent := time.Since(c.lastChangedSent)
+		timeUntilExpiration := waitIdleDuration - timeSinceLastSent
+		resendDelay := timeUntilExpiration - (10 * time.Second)
+
+		if resendDelay < 0 {
+			resendDelay = 0 // Send immediately if we're past the 10s mark
+		}
+
+		c.resendTimer = time.AfterFunc(resendDelay, func() {
+			c.onResendTimerFired(waitIdleDuration)
+		})
+
+		c.logger.Debug("Scheduled SQLRSYNC_CHANGED resend",
+			zap.Duration("delay", resendDelay))
+	}
+
+	return nil
+}
+
+// onResendTimerFired is called when we need to resend SQLRSYNC_CHANGED 10s before expiration
+func (c *Coordinator) onResendTimerFired(waitIdleDuration time.Duration) {
+	// Calculate remaining time until push
+	timeSinceLastSent := time.Since(c.lastChangedSent)
+	remainingTime := waitIdleDuration - timeSinceLastSent
+
+	if remainingTime < 0 {
+		remainingTime = 0
+	}
+
+	// Send SQLRSYNC_CHANGED with remaining duration
+	if err := c.remoteClient.SendChangedNotification(uint32(remainingTime.Seconds())); err != nil {
+		c.logger.Error("Failed to resend SQLRSYNC_CHANGED", zap.Error(err))
+		c.resendTimer = nil
+		return
+	}
+
+	c.lastChangedSent = time.Now()
+	c.resendTimer = nil
+
+	c.logger.Debug("Resent SQLRSYNC_CHANGED with updated duration",
+		zap.Duration("remainingTime", remainingTime))
+}
+
+// executeAutoMerge handles automatic merging when server has newer version
+func (c *Coordinator) executeAutoMerge(localClient *bridge.BridgeClient, remoteClient *remote.Client, latestVersion string) error {
+	// Step 1: Create temp file for merge
+	tempFile, err := os.CreateTemp("", "sqlrsync-merge-local-*.sqlite")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tempPath := tempFile.Name()
+	tempFile.Close()
+	defer os.Remove(tempPath)
+
+	fmt.Printf("📋 Step 1/5: Copying local database to temp file %s...\n", tempPath)
+
+	// Step 2: Use LOCAL mode to copy current database to temp
+	if err := localClient.RunDirectSync(tempPath); err != nil {
+		return fmt.Errorf("failed to copy local database to temp: %w", err)
+	}
+
+	fmt.Printf("📥 Step 2/5: Pulling latest version %s from server over temp file...\n", latestVersion)
+
+	// Step 3: PULL latest version over the temp file
+	authResult, err := c.resolveAuth("pull")
+	if err != nil {
+		return fmt.Errorf("authentication failed for merge pull: %w", err)
+	}
+
+	serverURL := authResult.ServerURL
+	if c.config.ServerURL != "" && c.config.ServerURL != "wss://sqlrsync.com" {
+		serverURL = c.config.ServerURL
+	}
+
+	remotePath := authResult.RemotePath
+	if c.config.RemotePath != "" {
+		remotePath = c.config.RemotePath
+	}
+
+	// Create new remote client for pulling latest version
+	pullClient, err := remote.New(&remote.Config{
+		ServerURL:               serverURL + "/sapi/pull/" + remotePath,
+		AuthKey:                 authResult.AccessKey,
+		ReplicaID:               authResult.ReplicaID,
+		Timeout:                 8000,
+		PingPong:                false,
+		Logger:                  c.logger.Named("merge-pull"),
+		Version:                 latestVersion,
+		ClientVersion:           c.config.ClientVersion,
+		WsID:                    c.config.WsID,
+		SendConfigCmd:           false,
+		SendKeyRequest:          false,
+		EnableTrafficInspection: c.config.Verbose,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create pull client for merge: %w", err)
+	}
+	defer pullClient.Close()
+
+	if err := pullClient.Connect(); err != nil {
+		return fmt.Errorf("failed to connect for merge pull: %w", err)
+	}
+
+	// Create bridge client for temp file
+	tempBridge, err := bridge.New(&bridge.BridgeConfig{
+		DatabasePath:             tempPath,
+		Logger:                   c.logger.Named("merge-temp"),
+		EnableSQLiteRsyncLogging: c.config.Verbose,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create bridge for temp file: %w", err)
+	}
+	defer tempBridge.Close()
+
+	// Pull latest version over temp file
+	readFunc := func(buffer []byte) (int, error) {
+		return pullClient.Read(buffer)
+	}
+	writeFunc := func(data []byte) error {
+		return pullClient.Write(data)
+	}
+
+	if err := tempBridge.RunPullSync(readFunc, writeFunc); err != nil {
+		return fmt.Errorf("failed to pull latest version for merge: %w", err)
+	}
+
+	fmt.Println("🔍 Step 3/5: Generating diff between temp (latest) and local (your changes)...")
+
+	// Step 4: Generate diff between temp (has latest) and local (has our changes)
+	// tempPath has server's latest version
+	// c.config.LocalPath has our local changes
+	// We want to find what changed from temp to local (our changes on top of latest)
+	diffResult, err := bridge.RunSQLDiff(tempPath, c.config.LocalPath)
+	if err != nil {
+		return fmt.Errorf("failed to generate diff: %w", err)
+	}
+
+	if !diffResult.HasChanges {
+		fmt.Println("✅ Step 4/5: No changes detected - databases are identical")
+		return nil // Nothing to merge
+	}
+
+	c.logger.Debug("Diff generated",
+		zap.Int("operations", len(diffResult.Operations)),
+		zap.Int("conflicts", len(diffResult.Conflicts)))
+
+	// Step 5: Check for conflicts
+	if len(diffResult.Conflicts) > 0 {
+		fmt.Printf("❌ Step 4/5: Detected %d primary key conflict(s)\n", len(diffResult.Conflicts))
+
+		// Send conflict notification to server
+		return c.sendMergeConflictNotification(serverURL, remotePath, latestVersion, []byte(diffResult.SQL))
+	}
+
+	fmt.Println("✅ Step 4/5: No conflicts detected")
+	fmt.Printf("📝 Step 5/5: Applying %d change(s) to local database...\n", len(diffResult.Operations))
+
+	// Step 6: Apply the diff to the temp file (which has latest)
+	// Then copy temp to local
+	if err := bridge.ApplyDiff(tempPath, diffResult); err != nil {
+		// If apply fails, fall back to simple copy
+		c.logger.Warn("Failed to apply diff, using direct copy", zap.Error(err))
+		if err := tempBridge.RunDirectSync(c.config.LocalPath); err != nil {
+			return fmt.Errorf("failed to apply merge: %w", err)
+		}
+	} else {
+		// Copy merged temp file to local
+		if err := tempBridge.RunDirectSync(c.config.LocalPath); err != nil {
+			return fmt.Errorf("failed to copy merged result: %w", err)
+		}
+	}
+
+	fmt.Println("✅ Merge completed successfully")
+	return nil
+}
+
+// sendMergeConflictNotification sends a merge conflict notification to the server
+func (c *Coordinator) sendMergeConflictNotification(serverURL, replicaName, version string, diffData []byte) error {
+	// Get hostname and wsID for notification
+	hostname, _ := os.Hostname()
+	//wsID, _ := auth.GetWsID()
+
+	// TODO: Implement HTTP POST to serverURL/sapi/notification/account/replicaName/
+	// Message body: { type: "merge-conflict", diff: base64(diffData), versions: [...], hostname: hostname, wsID: wsID }
+
+	fmt.Printf("❌ Merge conflict detected - server blocking until manual resolution\n")
+	fmt.Printf("   Server: %s\n", serverURL)
+	fmt.Printf("   Replica: %s\n", replicaName)
+	fmt.Printf("   Version: %s\n", version)
+	fmt.Printf("   Hostname: %s\n", hostname)
+	//fmt.Printf("   wsID: %s\n", wsID)
+	fmt.Printf("   Diff: %s\n", diffData)
+
+	return fmt.Errorf("merge conflict requires manual resolution")
+}
+
+// vacuumDatabase creates a vacuumed copy of the database in /tmp
+// Returns the path to the temp file and a cleanup function
+func (c *Coordinator) vacuumDatabase(dbPath string) (string, func(), error) {
+	c.logger.Info("Creating vacuumed copy of database", zap.String("source", dbPath))
+
+	// Create temp file in /tmp with pattern sqlrsync-vacuum-*
+	tempFile, err := os.CreateTemp("/tmp", "sqlrsync-vacuum-*.sqlite")
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tempPath := tempFile.Name()
+	tempFile.Close()
+
+	// Remove the temp file so VACUUM INTO can create it
+	os.Remove(tempPath)
+
+	cleanup := func() {
+		if err := os.Remove(tempPath); err != nil {
+			c.logger.Warn("Failed to remove temp vacuum file", zap.String("path", tempPath), zap.Error(err))
+		}
+	}
+
+	// Open database using RunDirectSync to copy and vacuum
+	// First, we'll use a direct file copy, then vacuum in place
+	// Actually, we'll use bridge to copy the file directly, then vacuum the copy
+	localClient, err := bridge.New(&bridge.BridgeConfig{
+		DatabasePath:             dbPath,
+		Logger:                   c.logger.Named("vacuum-copy"),
+		EnableSQLiteRsyncLogging: c.config.Verbose,
+	})
+	if err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("failed to create bridge client: %w", err)
+	}
+	defer localClient.Close()
+
+	// Copy database to temp location using RunDirectSync
+	if err := localClient.RunDirectSync(tempPath); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("failed to copy database: %w", err)
+	}
+
+	c.logger.Info("Database copied, running VACUUM", zap.String("tempFile", tempPath))
+
+	// Now run VACUUM on the temp file using the bridge's ExecuteVacuum function
+	//if err := bridge.ExecuteVacuum(tempPath); err != nil {
+	//cleanup()
+	//return "", nil, fmt.Errorf("VACUUM failed: %w", err)
+	//}
+	c.logger.Fatal("VACUUM not implemented")
+	c.logger.Info("VACUUM complete", zap.String("tempFile", tempPath))
+
+	// Get file sizes for reporting
+	sourceInfo, _ := os.Stat(dbPath)
+	tempInfo, _ := os.Stat(tempPath)
+	if sourceInfo != nil && tempInfo != nil {
+		reduction := float64(sourceInfo.Size()-tempInfo.Size()) / float64(sourceInfo.Size()) * 100
+		fmt.Printf("📦 VACUUM complete: %s → %s (%.1f%% reduction)\n",
+			formatBytes(sourceInfo.Size()),
+			formatBytes(tempInfo.Size()),
+			reduction)
+	}
+
+	return tempPath, cleanup, nil
+}
+
+// formatBytes formats bytes as human-readable string
+func formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// handlePullNotifications runs in a goroutine to listen for remote updates and pull them
+func (c *Coordinator) handlePullNotifications() {
+	c.logger.Info("Starting pull notification handler")
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			c.logger.Info("Pull notification handler stopped by context cancellation")
+			return
+		default:
+		}
+
+		// Wait for new version and pull if needed
+		if err := c.waitForVersionAndPull(true); err != nil {
+			if strings.Contains(err.Error(), "cancelled") || strings.Contains(err.Error(), "reconnection failed") {
+				return
+			}
+			c.logger.Warn("Pull subscription error", zap.Error(err))
+			continue
+		}
+	}
+}
+
+// waitForVersionAndPull waits for a new version notification and pulls it if different from current version
+// isBackground indicates if this is called from a background goroutine (affects logging and error handling)
+func (c *Coordinator) waitForVersionAndPull(isBackground bool) error {
+	// Wait for new version notification
+	version, err := c.subManager.WaitForNewVersionMsg()
+	if err != nil {
+		// Check if this is a cancellation (graceful shutdown)
+		if strings.Contains(err.Error(), "cancelled") {
+			if isBackground {
+				c.logger.Info("Pull notification handler stopped by user")
+			} else {
+				fmt.Println("Subscription stopped by user.")
+			}
+			return err
+		}
+
+		// Check if this is a permanent reconnection failure
+		if strings.Contains(err.Error(), "reconnection failed") {
+			if isBackground {
+				c.logger.Error("Pull subscription connection lost permanently", zap.Error(err))
+				fmt.Printf("❌ Lost connection to pull subscription service: %v\n", err)
+			} else {
+				fmt.Printf("❌ Failed to maintain connection to subscription service: %v\n", err)
+				fmt.Println("   Please check your network connection and try again later.")
+			}
+			return err
+		}
+
+		if isBackground {
+			c.logger.Warn("Pull subscription error", zap.Error(err))
+		} else {
+			c.logger.Error("Subscription error", zap.Error(err))
+		}
+		return err
+	}
+
+	if c.config.Version == version {
+		if isBackground {
+			c.logger.Debug("Already at version, skipping pull", zap.String("version", version))
+		} else {
+			fmt.Printf("ℹ️  Already at version %s, waiting for next update...\n", version)
+		}
+		return nil // Not an error, just skip
+	}
+
+	if isBackground {
+		fmt.Printf("📥 New remote version %s detected - pulling update...\n", version)
+	} else {
+		fmt.Printf("🔄 New version %s announced at %s!\n", version, time.Now().Format(time.RFC3339))
+	}
+
+	// Update version for the pull
+	oldVersion := c.config.Version
+	if version != "latest" {
+		c.config.Version = version
+	}
+
+	// Perform the pull
+	if err := c.executePull(true); err != nil {
+		if isBackground {
+			c.logger.Error("Auto-pull failed", zap.Error(err), zap.String("version", version))
+			fmt.Printf("❌ Failed to pull version %s: %v\n", version, err)
+			// Restore old version on failure
+			c.config.Version = oldVersion
+		}
+		return err
+	}
+
+	if isBackground {
+		fmt.Printf("✅ Successfully pulled version %s at %s\n", version, time.Now().Format(time.RFC3339))
+	}
+	return nil
+}
+
+// formatBytes formats bytes as human-readable string
+func _formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
 // Close cleanly shuts down the coordinator

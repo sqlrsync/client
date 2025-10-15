@@ -17,11 +17,14 @@ import (
 	"go.uber.org/zap"
 )
 
+const FEATURE_PULL_CONFLICTDETECTION = false
+
 const (
 	SQLRSYNC_CONFIG            = 0x51 // Send to keys and replicaID
 	SQLRSYNC_NEWREPLICAVERSION = 0x52 // New version available
 	SQLRSYNC_KEYREQUEST        = 0x53 // request keys
 	SQLRSYNC_COMMITMESSAGE     = 0x54 // commit message
+	SQLRSYNC_CHANGED           = 0x55 // Write detected notification with duration
 )
 
 // ProgressPhase represents the current phase of the sync operation
@@ -404,6 +407,7 @@ type Config struct {
 	AuthKey                 string
 	ClientVersion           string // version of the client software
 	SendKeyRequest          bool   // the -sqlrsync file doesn't exist, so make a key
+	AuthToken               string
 
 	SendConfigCmd     bool // we don't have the version number or remote path
 	LocalHostname     string
@@ -436,7 +440,7 @@ type Client struct {
 	reconnectChan chan struct{}
 
 	// Graceful shutdown coordination
-	wg      sync.WaitGroup
+	wg      *TrackedWaitGroup
 	closed  bool
 	closeMu sync.Mutex
 
@@ -451,10 +455,16 @@ type Client struct {
 	NewPullKey     string
 	NewPushKey     string
 	ReplicaID      string
-	Version        string
+	Version        string // needs to stay string because it can be `latest`
 	ReplicaPath    string
 	SetVisibility  int
+	KeyType        string // "PUSH" or "PULL" - indicates the type of key being used
 	newVersionChan chan struct{}
+
+	// Version conflict tracking
+	versionConflict bool
+	latestVersion   string
+	versionMu       sync.RWMutex
 
 	// Progress tracking
 	progress         *SyncProgress
@@ -504,6 +514,7 @@ func New(config *Config) (*Client, error) {
 		reconnectChan:  make(chan struct{}, 1),
 		inspector:      NewTrafficInspector(config.Logger, inspectionDepth),
 		newVersionChan: make(chan struct{}, 1),
+		wg:             NewTrackedWaitGroup(config.Logger),
 	}
 	return client, nil
 }
@@ -687,6 +698,10 @@ func (c *Client) Connect() error {
 
 	headers.Set("Authorization", c.config.AuthKey)
 
+	// Set X-ClientID to the wsID from defaults config
+	wsID := c.config.WsID
+	headers.Set("X-ClientID", wsID)
+
 	headers.Set("X-ClientVersion", c.config.ClientVersion)
 
 	if c.config.WsID != "" {
@@ -786,12 +801,13 @@ func (c *Client) Connect() error {
 	})
 
 	// Start message handling goroutines
-	c.wg.Add(2) // readLoop, writeLoop
+	c.wg.Add("readLoop")
 	go c.readLoop()
+	c.wg.Add("writeLoop")
 	go c.writeLoop()
 	if c.config.PingPong {
 		c.logger.Debug("Using Server PingPong")
-		c.wg.Add(1)
+		c.wg.Add("pingLoop")
 		go c.pingLoop()
 	}
 
@@ -922,7 +938,7 @@ func (c *Client) isSyncCompleted() bool {
 func (c *Client) handleOutboundTraffic(data []byte) {
 	// Always inspect for protocol messages (sync completion detection)
 	outboundCommand := c.inspector.InspectOutbound(data, c.config.EnableTrafficInspection)
-	if outboundCommand == "ORIGIN_END" {
+	if false && outboundCommand == "ORIGIN_END" {
 		c.logger.Info("ORIGIN_END detected - sync completing")
 		c.setSyncCompleted(true)
 	}
@@ -1007,20 +1023,19 @@ func (c *Client) Close() {
 	// Cancel context to signal all goroutines to stop
 	c.cancel()
 
-	// Close the WebSocket connection gracefully
+	// Immediately close the WebSocket connection to unblock any pending reads/writes
+	// This will cause readLoop to exit immediately rather than waiting for read timeout
 	c.mu.Lock()
 	if c.conn != nil {
-		// Send close message
+		// Send close message (best effort - don't wait for response)
 		closeMessage := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")
-		err := c.conn.WriteControl(websocket.CloseMessage, closeMessage, time.Now().Add(3*time.Second))
+		err := c.conn.WriteControl(websocket.CloseMessage, closeMessage, time.Now().Add(1*time.Second))
 		if err != nil {
 			c.logger.Debug("Error sending close message", zap.Error(err))
 		} else {
 			c.logger.Debug("Sent WebSocket close message")
 		}
-
-		// Set a read deadline for the close handshake
-		c.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		c.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 
 		// Wait for server's close response by reading until we get a close frame
 		for {
@@ -1036,26 +1051,20 @@ func (c *Client) Close() {
 			// Keep reading until we get the close frame or timeout
 		}
 
+		// Close the connection immediately to unblock readLoop
 		c.conn.Close()
+		c.logger.Debug("WebSocket connection closed")
 		c.conn = nil
 	}
 	c.mu.Unlock()
 
 	c.setConnected(false)
 
-	// Wait for all goroutines to finish
-	done := make(chan struct{})
-	go func() {
-		c.wg.Wait()
-		close(done)
-	}()
-
-	// Wait with timeout
-	select {
-	case <-done:
-		c.logger.Debug("All goroutines terminated successfully")
-	case <-time.After(10 * time.Second):
+	// Now wait for all goroutines to finish
+	// Since we closed the connection, readLoop should exit immediately
+	if !c.wg.WaitWithTimeout(2 * time.Second) {
 		c.logger.Warn("Timeout waiting for goroutines to terminate")
+		c.wg.LogStillRunning()
 	}
 
 	// Close channels safely
@@ -1127,7 +1136,7 @@ func (c *Client) Reconnect() error {
 
 // pingLoop sends periodic ping messages to keep the connection alive
 func (c *Client) pingLoop() {
-	defer c.wg.Done()
+	defer c.wg.Done("pingLoop")
 	c.logger.Debug("Starting ping loop")
 	defer c.logger.Debug("Ping loop terminated")
 
@@ -1217,7 +1226,7 @@ func (c *Client) setConnected(connected bool) {
 
 // readLoop handles incoming WebSocket messages
 func (c *Client) readLoop() {
-	defer c.wg.Done()
+	defer c.wg.Done("readLoop")
 	c.logger.Debug("Starting read loop")
 	defer func() {
 		c.logger.Debug("Read loop terminated")
@@ -1225,179 +1234,181 @@ func (c *Client) readLoop() {
 	}()
 
 	for {
+		// Check cancellation before each iteration
 		select {
 		case <-c.ctx.Done():
 			return
 		default:
-			c.mu.RLock()
-			conn := c.conn
-			c.mu.RUnlock()
+		}
 
-			if conn == nil {
-				c.setConnected(false)
-				return
+		c.mu.RLock()
+		conn := c.conn
+		c.mu.RUnlock()
+
+		if conn == nil {
+			c.setConnected(false)
+			return
+		}
+
+		// In subscribe mode, continue even after sync completion
+		if c.isSyncCompleted() && !c.config.Subscribe {
+			c.setConnected(false)
+			return
+		}
+
+		// In subscribe mode, if connection failed, don't continue reading
+		if c.config.Subscribe && c.GetLastError() != nil {
+			c.logger.Debug("Connection has error in subscribe mode, exiting read loop")
+			c.setConnected(false)
+			return
+		}
+
+		// Set read deadline - much longer timeout in subscribe mode for hibernated connections
+		timeout := 30 * time.Second
+		if c.config.Subscribe {
+			// In subscribe mode, use very long timeout (1 hour) to allow for hibernated connections
+			timeout = 1 * time.Hour
+		}
+		conn.SetReadDeadline(time.Now().Add(timeout))
+
+		messageType, data, err := conn.ReadMessage()
+		if err != nil {
+			c.logger.Debug("ReadMessage error", zap.Error(err))
+
+			// Check if this is an expected/normal connection closure
+			if websocket.IsCloseError(err,
+				websocket.CloseNoStatusReceived, // 1005 - normal close from server after ORIGIN_END
+				websocket.CloseNormalClosure,    // 1000 - normal closure
+				websocket.CloseGoingAway) {      // 1001 - endpoint going away
+				c.logger.Info("WebSocket connection closed normally", zap.Error(err))
+			} else if strings.Contains(err.Error(), "use of closed network connection") {
+				// This happens when we close the connection during shutdown - it's expected
+				c.logger.Debug("Connection closed during shutdown", zap.Error(err))
+			} else {
+				// Any other error is unexpected
+				//c.logger.Error("WebSocket read error", zap.Error(err))
 			}
+			c.setError(err)
+			c.setConnected(false)
 
-			// In subscribe mode, continue even after sync completion
-			if c.isSyncCompleted() && !c.config.Subscribe {
-				c.setConnected(false)
-				return
-			}
-
-			// In subscribe mode, if connection failed, don't continue reading
-			if c.config.Subscribe && c.GetLastError() != nil {
-				c.logger.Debug("Connection has error in subscribe mode, exiting read loop")
-				c.setConnected(false)
-				return
-			}
-
-			// Set read deadline - much longer timeout in subscribe mode for hibernated connections
-			timeout := 30 * time.Second
-			if c.config.Subscribe {
-				// In subscribe mode, use very long timeout (1 hour) to allow for hibernated connections
-				timeout = 1 * time.Hour
-			}
-			conn.SetReadDeadline(time.Now().Add(timeout))
-
-			messageType, data, err := conn.ReadMessage()
-			if err != nil {
-				c.logger.Debug("ReadMessage error", zap.Error(err))
-
-				// Check if this is an expected/normal connection closure
-				if websocket.IsCloseError(err,
-					websocket.CloseNoStatusReceived, // 1005 - normal close from server after ORIGIN_END
-					websocket.CloseNormalClosure,    // 1000 - normal closure
-					websocket.CloseGoingAway) {      // 1001 - endpoint going away
-					c.logger.Info("WebSocket connection closed normally", zap.Error(err))
-				} else if strings.Contains(err.Error(), "use of closed network connection") {
-					// This happens when we close the connection during shutdown - it's expected
-					c.logger.Debug("Connection closed during shutdown", zap.Error(err))
-				} else {
-					// Any other error is unexpected
-					//c.logger.Error("WebSocket read error", zap.Error(err))
-				}
-				c.setError(err)
-				c.setConnected(false)
-
-				// If this is a normal closure, close read queue immediately
-				if websocket.IsCloseError(err,
-					websocket.CloseNoStatusReceived,
-					websocket.CloseNormalClosure,
-					websocket.CloseGoingAway) {
-					c.logger.Debug("Normal closure - closing read queue immediately")
-					// Close the read queue to signal no more data
-					select {
-					case <-c.readQueue:
-						// Already closed
-					default:
-						close(c.readQueue)
-					}
-				}
-
-				// Only signal reconnection for truly unexpected errors (not normal closures)
-				if !websocket.IsCloseError(err,
-					websocket.CloseNoStatusReceived,
-					websocket.CloseNormalClosure,
-					websocket.CloseGoingAway) {
-					select {
-					case c.reconnectChan <- struct{}{}:
-					default:
-					}
-				}
-				return
-			}
-
-			if messageType == websocket.TextMessage {
-				configMsgResp := "CONFIG="
-				messageResp := "MESSAGE="
-				abortResp := "ABORT="
-				// Handle text messages for NEWPULLKEY, NEWPUSHKEY, REPLICAID
-				// Example: "NEWPULLKEY=xxxxxxxxxxxxxxxxxxxxxx"
-				strData := string(data)
-
-				if len(data) >= len(abortResp) && strings.HasPrefix(strData, abortResp) {
-					color.Red("❌ Server aborted connection: %s", strData[len(abortResp):])
-					c.setConnected(false)
-					message := strData[len(abortResp):]
-					c.setError(fmt.Errorf("server aborted connection: %s", message))
-				} else if (len(data) >= len(configMsgResp)) && strings.HasPrefix(strData, configMsgResp) {
-					// CONFIG={JSON}
-					jsonStr := strData[len(configMsgResp):]
-					var configMsg map[string]interface{}
-					err := json.Unmarshal([]byte(jsonStr), &configMsg)
-					if err != nil {
-						c.logger.Error("Failed to parse CONFIG JSON", zap.Error(err))
-						continue
-					}
-					if configMsg["newPullKey"] != nil {
-						c.NewPullKey = configMsg["newPullKey"].(string)
-					}
-					if configMsg["newPushKey"] != nil {
-						c.NewPushKey = configMsg["newPushKey"].(string)
-					}
-					if configMsg["replicaID"] != nil {
-						c.ReplicaID = configMsg["replicaID"].(string)
-					}
-					if configMsg["replicaPath"] != nil {
-						c.ReplicaPath = configMsg["replicaPath"].(string)
-					}
-					if configMsg["committedVersionID"] != nil {
-						c.Version = configMsg["committedVersionID"].(string)
-					}
-				} else if (len(data) >= len(messageResp)) && strings.HasPrefix(strData, messageResp) {
-					fmt.Println(strData[len(messageResp):])
-				}
-				continue
-			}
-
-			if messageType != websocket.BinaryMessage {
-				c.logger.Warn("Received non-binary message", zap.Int("messageType", messageType))
-				continue
-			}
-
-			c.logger.Debug("Received message from remote", zap.Int("bytes", len(data)))
-
-			c.inspector.LogWebSocketTraffic(data, "IN (Server → Client)", c.config.EnableTrafficInspection)
-
-			// Check if this is ORIGIN_END to detect sync completion early
-			msgType := c.inspector.parseMessageType(data)
-			if msgType == "ORIGIN_END" {
-				c.logger.Info("ORIGIN_END detected in read loop - sync will complete")
-				// Don't mark as completed yet - let the C code process all remaining data first
-				// The Read method will mark it as completed when it actually receives ORIGIN_END
-			} else if msgType == "SQLRSYNC_NEWREPLICAVERSION" && c.config.Subscribe {
-				// Handle new version notification in subscribe mode
-				c.logger.Info("SQLRSYNC_NEWREPLICAVERSION (0x52) received - new version available!")
+			// If this is a normal closure, close read queue immediately
+			if websocket.IsCloseError(err,
+				websocket.CloseNoStatusReceived,
+				websocket.CloseNormalClosure,
+				websocket.CloseGoingAway) {
+				c.logger.Debug("Normal closure - closing read queue immediately")
+				// Close the read queue to signal no more data
 				select {
-				case c.newVersionChan <- struct{}{}:
-					c.logger.Debug("New version notification sent to channel")
+				case <-c.readQueue:
+					// Already closed
 				default:
-					c.logger.Debug("New version channel already has pending notification")
+					close(c.readQueue)
 				}
-				// Don't queue this message for normal reading
-				continue
 			}
 
-			// Handle progress tracking in read loop
-			if c.config.ProgressCallback != nil {
-				c.inspector.InspectForProgress(data, "IN (Server → Client)", func(event SyncProgressEvent) {
-					c.handleProgressEvent(event)
-				}, c.config.EnableTrafficInspection)
+			// Only signal reconnection for truly unexpected errors (not normal closures)
+			if !websocket.IsCloseError(err,
+				websocket.CloseNoStatusReceived,
+				websocket.CloseNormalClosure,
+				websocket.CloseGoingAway) {
+				select {
+				case c.reconnectChan <- struct{}{}:
+				default:
+				}
 			}
-			// Queue the data for reading
+			return
+		}
+
+		if messageType == websocket.TextMessage {
+			configMsgResp := "CONFIG="
+			messageResp := "MESSAGE="
+			abortResp := "ABORT="
+			// Handle text messages for NEWPULLKEY, NEWPUSHKEY, REPLICAID
+			// Example: "NEWPULLKEY=xxxxxxxxxxxxxxxxxxxxxx"
+			strData := string(data)
+
+			if len(data) >= len(abortResp) && strings.HasPrefix(strData, abortResp) {
+				color.Red("❌ Server aborted connection: %s", strData[len(abortResp):])
+				c.setConnected(false)
+				message := strData[len(abortResp):]
+				c.setError(fmt.Errorf("server aborted connection: %s", message))
+			} else if (len(data) >= len(configMsgResp)) && strings.HasPrefix(strData, configMsgResp) {
+				// CONFIG={JSON}
+				jsonStr := strData[len(configMsgResp):]
+				var configMsg map[string]interface{}
+				err := json.Unmarshal([]byte(jsonStr), &configMsg)
+				if err != nil {
+					c.logger.Error("Failed to parse CONFIG JSON", zap.Error(err))
+					continue
+				}
+				if configMsg["newPullKey"] != nil {
+					c.NewPullKey = configMsg["newPullKey"].(string)
+				}
+				if configMsg["newPushKey"] != nil {
+					c.NewPushKey = configMsg["newPushKey"].(string)
+				}
+				if configMsg["replicaID"] != nil {
+					c.ReplicaID = configMsg["replicaID"].(string)
+				}
+				if configMsg["replicaPath"] != nil {
+					c.ReplicaPath = configMsg["replicaPath"].(string)
+				}
+				if configMsg["committedVersionID"] != nil {
+					c.Version = configMsg["committedVersionID"].(string)
+				}
+			} else if (len(data) >= len(messageResp)) && strings.HasPrefix(strData, messageResp) {
+				fmt.Println(strData[len(messageResp):])
+			}
+			continue
+		}
+
+		if messageType != websocket.BinaryMessage {
+			c.logger.Warn("Received non-binary message", zap.Int("messageType", messageType))
+			continue
+		}
+
+		c.logger.Debug("Received message from remote", zap.Int("bytes", len(data)))
+
+		c.inspector.LogWebSocketTraffic(data, "IN (Server → Client)", c.config.EnableTrafficInspection)
+
+		// Check if this is ORIGIN_END to detect sync completion early
+		msgType := c.inspector.parseMessageType(data)
+		if msgType == "ORIGIN_END" {
+			c.logger.Info("ORIGIN_END detected in read loop - sync will complete")
+			// Don't mark as completed yet - let the C code process all remaining data first
+			// The Read method will mark it as completed when it actually receives ORIGIN_END
+		} else if msgType == "SQLRSYNC_NEWREPLICAVERSION" && c.config.Subscribe {
+			// Handle new version notification in subscribe mode
+			c.logger.Info("SQLRSYNC_NEWREPLICAVERSION (0x52) received - new version available!")
 			select {
-			case c.readQueue <- data:
-				c.logger.Debug("Data queued for reading", zap.Int("bytes", len(data)))
-			case <-c.ctx.Done():
-				return
+			case c.newVersionChan <- struct{}{}:
+				c.logger.Debug("New version notification sent to channel")
+			default:
+				c.logger.Debug("New version channel already has pending notification")
 			}
+			// Don't queue this message for normal reading
+			continue
+		}
+
+		// Handle progress tracking in read loop
+		if c.config.ProgressCallback != nil {
+			c.inspector.InspectForProgress(data, "IN (Server → Client)", func(event SyncProgressEvent) {
+				c.handleProgressEvent(event)
+			}, c.config.EnableTrafficInspection)
+		}
+		// Queue the data for reading
+		select {
+		case c.readQueue <- data:
+			c.logger.Debug("Data queued for reading", zap.Int("bytes", len(data)))
+		case <-c.ctx.Done():
+			return
 		}
 	}
 }
 
 // writeLoop handles outgoing WebSocket messages
 func (c *Client) writeLoop() {
-	defer c.wg.Done()
+	defer c.wg.Done("writeLoop")
 	c.logger.Debug("Starting write loop")
 	defer func() {
 		c.logger.Debug("Write loop terminated")
@@ -1430,6 +1441,17 @@ func (c *Client) writeLoop() {
 			// Inspect raw WebSocket outbound traffic
 			c.inspector.LogWebSocketTraffic(data, "OUT (Client → Server)", c.config.EnableTrafficInspection)
 
+			// For a PULL with no existing data we need to send this before writes, however I imagine this needs
+			// to go after ORIGIN_BEGIN for a PUSH with existing data.
+			if c.config.SendConfigCmd {
+				conn.WriteMessage(websocket.BinaryMessage, []byte{SQLRSYNC_CONFIG})
+				c.config.SendConfigCmd = false
+			}
+			if c.config.SendKeyRequest {
+				conn.WriteMessage(websocket.BinaryMessage, []byte{SQLRSYNC_KEYREQUEST})
+				c.config.SendKeyRequest = false
+			}
+
 			err := conn.WriteMessage(websocket.BinaryMessage, data)
 			if err != nil {
 				c.logger.Error("WebSocket write error", zap.Error(err))
@@ -1442,18 +1464,6 @@ func (c *Client) writeLoop() {
 				default:
 				}
 				return
-			}
-
-			// consider moving this to InspectorOutbound
-
-			// Do this here so ORIGIN_BEGIN sends first
-			if c.config.SendConfigCmd {
-				conn.WriteMessage(websocket.BinaryMessage, []byte{SQLRSYNC_CONFIG})
-				c.config.SendConfigCmd = false
-			}
-			if c.config.SendKeyRequest {
-				conn.WriteMessage(websocket.BinaryMessage, []byte{SQLRSYNC_KEYREQUEST})
-				c.config.SendKeyRequest = false
 			}
 
 			c.logger.Debug("Sent message to remote", zap.Int("bytes", len(data)))
@@ -1469,14 +1479,65 @@ func (c *Client) GetNewPushKey() string {
 	return c.NewPushKey
 }
 
+// SendChangedNotification sends SQLRSYNC_CHANGED message with duration until push
+func (c *Client) SendChangedNotification(durationSeconds uint32) error {
+	// Message format: [0x57][duration: 4 bytes as seconds]
+	msg := make([]byte, 5)
+	msg[0] = SQLRSYNC_CHANGED
+
+	// Duration in seconds (4 bytes, little-endian)
+	msg[1] = byte(durationSeconds)
+	msg[2] = byte(durationSeconds >> 8)
+	msg[3] = byte(durationSeconds >> 16)
+	msg[4] = byte(durationSeconds >> 24)
+
+	// Send via write queue
+	select {
+	case c.writeQueue <- msg:
+		c.logger.Debug("Sent SQLRSYNC_CHANGED notification",
+			zap.Uint32("durationSeconds", durationSeconds))
+		return nil
+	default:
+		return fmt.Errorf("write queue full")
+	}
+}
+
 func (c *Client) GetReplicaID() string {
 	return c.ReplicaID
 }
 func (c *Client) GetReplicaPath() string {
 	return c.ReplicaPath
 }
-func (c *Client) GetVersion() string {
+func (c *Client) GetLatestCommitVersion() string {
 	return c.Version
+}
+func (c *Client) GetKeyType() string {
+	return c.KeyType
+}
+
+// HasVersionConflict returns true if a version conflict was detected
+func (c *Client) HasVersionConflict() bool {
+	if FEATURE_PULL_CONFLICTDETECTION != true {
+		return false
+	}
+	c.versionMu.RLock()
+	defer c.versionMu.RUnlock()
+	return c.versionConflict
+}
+
+// GetLatestVersion returns the latest version from server (if version conflict occurred)
+func (c *Client) GetLatestVersion() string {
+	c.versionMu.RLock()
+	defer c.versionMu.RUnlock()
+	return c.latestVersion
+}
+
+// ResetVersionConflict clears the version conflict flag
+func (c *Client) ResetVersionConflict() {
+	c.versionMu.Lock()
+	defer c.versionMu.Unlock()
+	c.versionConflict = false
+	c.latestVersion = ""
 }
 
 // WaitForNewVersion blocks until a new version notification is received (0x52)
