@@ -956,7 +956,7 @@ func (c *Coordinator) executePushSubscribe() error {
 
 		c.logger.Debug("Starting wait timer", zap.Duration("duration", timerDuration))
 		waitTimer = time.AfterFunc(timerDuration, func() {
-			fmt.Printf("💤 Timer expired after %v - pushing changes...\n", timerDuration)
+			fmt.Printf("⏰ Timer expired after %v - pushing changes...\n", timerDuration)
 
 			if err := c.executePushWithRetry(); err != nil {
 				c.logger.Error("PUSH failed", zap.Error(err))
