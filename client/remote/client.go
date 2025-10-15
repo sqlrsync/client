@@ -455,7 +455,7 @@ type Client struct {
 	NewPullKey     string
 	NewPushKey     string
 	ReplicaID      string
-	Version        string
+	Version        string // needs to stay string because it can be `latest`
 	ReplicaPath    string
 	SetVisibility  int
 	KeyType        string // "PUSH" or "PULL" - indicates the type of key being used
@@ -1508,7 +1508,7 @@ func (c *Client) GetReplicaID() string {
 func (c *Client) GetReplicaPath() string {
 	return c.ReplicaPath
 }
-func (c *Client) GetVersion() string {
+func (c *Client) GetLatestCommitVersion() string {
 	return c.Version
 }
 func (c *Client) GetKeyType() string {

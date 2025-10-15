@@ -298,7 +298,7 @@ func (c *Coordinator) executePullSubscribe() error {
 		default:
 		}
 
-		// Wait for new version notification
+		// PULL (read only) Subscribe: Wait for new version notification
 		for {
 			if err := c.waitForVersionAndPull(false); err != nil {
 				// Check if this is a cancellation or reconnection failure (both are terminal)
@@ -426,7 +426,7 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 	// Check database integrity after pull
 	localClient.CheckIntegrity()
 
-	c.config.Version = remoteClient.GetVersion()
+	c.config.Version = remoteClient.GetLatestCommitVersion()
 	// Save pull result if needed
 	if remoteClient.GetNewPullKey() != "" && c.authResolver.CheckNeedsDashFile(c.config.LocalPath, remotePath) {
 		if err := c.authResolver.SavePullResult(
@@ -554,6 +554,7 @@ func (c *Coordinator) executePush() error {
 
 	// Perform the sync
 	if err := c.performPushSync(localClient, remoteClient); err != nil {
+
 		// Check if this was a version conflict and auto-merge is enabled
 		if remoteClient.HasVersionConflict() && c.config.AutoMerge {
 			latestVersion := remoteClient.GetLatestVersion()
@@ -574,6 +575,8 @@ func (c *Coordinator) executePush() error {
 			return fmt.Errorf("push synchronization failed: %w", err)
 		}
 	}
+
+	c.config.Version = remoteClient.GetLatestCommitVersion()
 
 	// Save push result if we got new keys
 	if remoteClient.GetNewPushKey() != "" {
@@ -812,8 +815,6 @@ func (c *Coordinator) executePushSubscribe() error {
 		fmt.Println("   Switching to PULL subscription mode instead...")
 		return c.executePullSubscribe()
 	}
-
-	fmt.Println("ℹ️  Change notifications will be sent to server for analytics")
 
 	// Create file watcher
 	fileWatcher, err := watcher.NewWatcher(&watcher.Config{
@@ -1380,7 +1381,6 @@ func (c *Coordinator) waitForVersionAndPull(isBackground bool) error {
 		return err
 	}
 
-	// Check if we already have this version
 	if c.config.Version == version {
 		if isBackground {
 			c.logger.Debug("Already at version, skipping pull", zap.String("version", version))
