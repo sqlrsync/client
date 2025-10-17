@@ -481,6 +481,9 @@ func (m *Manager) readLoop() {
 		}
 
 		var msg Message
+		if string(data) == "PING" || string(data) == "PONG" {
+			return
+		}
 		if err := json.Unmarshal(data, &msg); err != nil {
 			m.logger.Warn("Failed to unmarshal message", zap.Error(err))
 			continue
