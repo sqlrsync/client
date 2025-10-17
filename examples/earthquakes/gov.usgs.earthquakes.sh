@@ -11,7 +11,7 @@ URL=https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_month.csv
 URL=https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.csv
 
 # Disabled so we can use file watching
-#SQLRSYNC_PATH=usgs.gov/earthquakes.db
+SQLRSYNC_PATH=usgs.gov/earthquakes.db
 PRIMARY_KEY=id
 MODE="INSERT OR REPLACE INTO"
 SCHEMA="time TEXT, latitude REAL, longitude REAL, depth REAL, mag REAL, magType TEXT, nst INTEGER, gap REAL, dmin REAL, rms REAL, net TEXT, id TEXT PRIMARY KEY, updated TEXT, place TEXT, type TEXT, horizontalError REAL, depthError REAL, magError REAL, magNst INTEGER, status TEXT, locationSource TEXT, magSource TEXT"
@@ -81,9 +81,9 @@ EOF
             sqlite3 "$FILE" "SELECT time, mag, place FROM $TABLE ORDER BY time DESC LIMIT 3;" 2>/dev/null | head -3
             
             # Sync to SQLRsync server if path is configured
-            if [ -n "$SQLRSYNC_PATH" ] && command -v sqlrsync >/dev/null 2>&1; then
+            if [ -n "$SQLRSYNC_PATH" ] && command -v sqlrsync >/dev/null 2>&1 && [ "${new_records}" -gt 0 ]; then
                 echo "Syncing to SQLRsync server: $SQLRSYNC_PATH"
-                sqlrsync "$FILE" "$SQLRSYNC_PATH" -m "Added $new_records records, others updated"
+                sqlrsync "$FILE" "$SQLRSYNC_PATH" -m "Added $new_records earthquakes"
                 if [ $? -eq 0 ]; then
                     echo "Successfully synced to server"
                 else

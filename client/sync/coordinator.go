@@ -861,7 +861,7 @@ func (c *Coordinator) executePushSubscribe() error {
 		fmt.Println("⚠️  Warning: Could not set up pull subscription - will only push changes")
 	} else {
 		defer c.subManager.Close()
-		fmt.Println("✅ Subscribed to remote updates - will pull new versions automatically")
+		fmt.Println("✅ Subscribed to remote updates at " + time.Unix(time.Now().Unix(), 0).String() + " - will pull new versions automatically")
 
 		// Start goroutine to handle pull notifications
 		go c.handlePullNotifications()
@@ -1131,7 +1131,7 @@ func (c *Coordinator) executeAutoMerge(localClient *bridge.BridgeClient, remoteC
 		AuthKey:                 authResult.AccessKey,
 		ReplicaID:               authResult.ReplicaID,
 		Timeout:                 8000,
-		PingPong:                false,
+		PingPong:                true,
 		Logger:                  c.logger.Named("merge-pull"),
 		Version:                 latestVersion,
 		ClientVersion:           c.config.ClientVersion,
