@@ -361,7 +361,7 @@ func (c *Coordinator) executePull(isSubscription bool) error {
 		AuthKey:                 authResult.AccessKey,
 		ReplicaID:               authResult.ReplicaID,
 		Timeout:                 8000,
-		PingPong:                false, // No ping/pong needed for single sync
+		PingPong:                true, // Ping/pong enabled for subscription sync
 		Logger:                  c.logger.Named("remote"),
 		Subscribe:               false, // Subscription handled separately
 		EnableTrafficInspection: c.config.Verbose,
