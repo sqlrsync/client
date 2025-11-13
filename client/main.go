@@ -15,7 +15,7 @@ import (
 	"github.com/sqlrsync/sqlrsync.com/sync"
 )
 
-var VERSION = "0.0.7"
+var VERSION = "0.0.8"
 var (
 	serverURL          string
 	verbose            bool
