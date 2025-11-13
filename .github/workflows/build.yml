@@ -38,6 +38,9 @@ jobs:
           - os: linux
             runs-on: ubuntu-latest
             arch: x86_64
+          - os: linux-musl
+            runs-on: ubuntu-latest
+            arch: x86_64
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -53,6 +56,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y sqlite3 libsqlite3-dev build-essential
 
+      - name: Install dependencies (Alpine/musl)
+        if: matrix.os == 'linux-musl'
+        run: |
+          # Use Alpine container for musl builds
+          docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace alpine:latest sh -c "
+            apk add --no-cache build-base sqlite-dev go curl git &&
+            echo 'Alpine dependencies installed'
+          "
+
       - name: Install dependencies (macOS)
         if: matrix.os == 'darwin'
         run: |
@@ -64,7 +76,7 @@ jobs:
           choco install sqlite
 
       - name: Build SQLite (Unix)
-        if: matrix.os != 'windows'
+        if: matrix.os != 'windows' && matrix.os != 'linux-musl'
         run: |
           cd sqlite
           if [ ! -d "sqlite-latest" ]; then
@@ -77,6 +89,24 @@ jobs:
           ./configure --prefix=$(pwd)/../install --enable-static --disable-shared "CFLAGS=-DSQLITE_ENABLE_DBPAGE_VTAB=1 -O2"
           make
           make install
+
+      - name: Build SQLite (Alpine/musl)
+        if: matrix.os == 'linux-musl'
+        run: |
+          # Build SQLite in Alpine container for musl compatibility
+          docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace alpine:latest sh -c "
+            apk add --no-cache build-base curl &&
+            cd sqlite &&
+            if [ ! -d 'sqlite-latest' ]; then
+              curl -O https://www.sqlite.org/2024/sqlite-autoconf-3450100.tar.gz
+              tar xzf sqlite-autoconf-3450100.tar.gz
+              mv sqlite-autoconf-3450100 sqlite-latest
+            fi &&
+            cd sqlite-latest &&
+            ./configure --prefix=\$(pwd)/../install --enable-static --disable-shared 'CFLAGS=-DSQLITE_ENABLE_DBPAGE_VTAB=1 -O2' &&
+            make &&
+            make install
+          "
 
       - name: Build SQLite (Windows)
         if: matrix.os == 'windows'
@@ -94,9 +124,20 @@ jobs:
           bash -c "make install"
 
       - name: Build Bridge
+        if: matrix.os != 'linux-musl'
         run: |
           cd bridge
           make
+
+      - name: Build Bridge (Alpine/musl)
+        if: matrix.os == 'linux-musl'
+        run: |
+          # Build bridge in Alpine container
+          docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace alpine:latest sh -c "
+            apk add --no-cache build-base go &&
+            cd bridge &&
+            make
+          "
 
       - name: Set build environment (Darwin ARM64)
         if: matrix.os == 'darwin' && matrix.arch == 'arm64'
@@ -119,6 +160,13 @@ jobs:
           echo "GOARCH=amd64" >> $GITHUB_ENV
           echo "CGO_ENABLED=1" >> $GITHUB_ENV
 
+      - name: Set build environment (Linux musl x86_64)
+        if: matrix.os == 'linux-musl' && matrix.arch == 'x86_64'
+        run: |
+          echo "GOOS=linux" >> $GITHUB_ENV
+          echo "GOARCH=amd64" >> $GITHUB_ENV
+          echo "CGO_ENABLED=1" >> $GITHUB_ENV
+
       - name: Set build environment (Windows)
         if: matrix.os == 'windows'
         run: |
@@ -127,10 +175,20 @@ jobs:
           echo "CGO_ENABLED=1" >> $env:GITHUB_ENV
 
       - name: Build Client (Unix)
-        if: matrix.os != 'windows'
+        if: matrix.os != 'windows' && matrix.os != 'linux-musl'
         run: |
           cd client
           make build
+
+      - name: Build Client (Alpine/musl)
+        if: matrix.os == 'linux-musl'
+        run: |
+          # Build client in Alpine container
+          docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace alpine:latest sh -c "
+            apk add --no-cache build-base go git &&
+            cd client &&
+            make build
+          "
 
       - name: Build Client (Windows)
         if: matrix.os == 'windows'
