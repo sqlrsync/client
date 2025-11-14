@@ -196,15 +196,14 @@ jobs:
           fi
           echo "✓ Binary built successfully at ./client/bin/sqlrsync"
           file ./client/bin/sqlrsync
-          ldd ./client/bin/sqlrsync || true
+
       - name: Docker based test (Alpine/musl)
         if: matrix.os == 'linux-musl'
         run: |
           docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace alpine:latest sh -c "
+            ldd ./client/bin/sqlrsync &&
             ./client/bin/sqlrsync --version &&
             ./client/bin/sqlrsync usgs.gov/earthquakes.db &&
-            
-
           "
 
       - name: Build Client (Windows)
