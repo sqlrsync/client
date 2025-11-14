@@ -197,6 +197,15 @@ jobs:
           echo "✓ Binary built successfully at ./client/bin/sqlrsync"
           file ./client/bin/sqlrsync
           ldd ./client/bin/sqlrsync || true
+      - name: Docker based test (Alpine/musl)
+        if: matrix.os == 'linux-musl'
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace alpine:latest sh -c "
+            ./client/bin/sqlrsync --version &&
+            ./client/bin/sqlrsync usgs.gov/earthquakes.db &&
+            
+
+          "
 
       - name: Build Client (Windows)
         if: matrix.os == 'windows'
@@ -206,16 +215,19 @@ jobs:
           bash -c "make build"
 
       - name: Test sqlrsync --version
+        if: matrix.os != 'linux-musl'
         run: |
           echo "Testing sqlrsync --version..."
           ./client/bin/sqlrsync --version
 
       - name: Test sqlrsync help
+        if: matrix.os != 'linux-musl'
         run: |
           echo "Testing sqlrsync help..."
           ./client/bin/sqlrsync || true
 
       - name: Test sqlrsync with usgs.gov/earthquakes.db
+        if: matrix.os != 'linux-musl'
         run: |
           echo "Testing sqlrsync usgs.gov/earthquakes.db..."
           ./client/bin/sqlrsync usgs.gov/earthquakes.db
@@ -253,7 +265,7 @@ jobs:
           Receive-Job $job > subscribe_output.log 2>&1 || $true
 
       - name: Verify subscribe output (Unix)
-        if: matrix.os != 'windows'
+        if: matrix.os != 'windows' && matrix.os != 'linux-musl'
         run: |
           echo "Checking for 'Sync complete' in output..."
           cat subscribe_output.log
