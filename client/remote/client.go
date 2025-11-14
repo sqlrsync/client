@@ -1455,14 +1455,29 @@ func (c *Client) writeLoop() {
 			err := conn.WriteMessage(websocket.BinaryMessage, data)
 			if err != nil {
 				c.logger.Error("WebSocket write error", zap.Error(err))
+
+				// If the error indicates we already sent a close, treat this as a normal
+				// closure for PUSH syncs and mark the sync completed so the caller can
+				// finish processing. This happens when the websocket library returns
+				// "websocket: close sent" while attempting to write after a close.
+				if strings.Contains(err.Error(), "close sent") {
+					c.logger.Info("Write error contains 'close sent' - treating as normal closure")
+					c.logger.Info("Ending PUSH sync due to close-sent write error")
+					c.setSyncCompleted(true)
+				}
 				c.setError(err)
 				c.setConnected(false)
 
-				// Signal potential reconnection
-				select {
-				case c.reconnectChan <- struct{}{}:
-				default:
-				}
+				// Treat this as a true disconnection (do not trigger reconnect).
+				// Close the read queue so any readers observe EOF and stop.
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							// ignore if already closed
+						}
+					}()
+					close(c.readQueue)
+				}()
 				return
 			}
 
