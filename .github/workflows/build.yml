@@ -189,6 +189,14 @@ jobs:
             cd client &&
             make build
           "
+          # Verify binary was created
+          if [ ! -f ./client/bin/sqlrsync ]; then
+            echo "ERROR: Binary not found at ./client/bin/sqlrsync"
+            exit 1
+          fi
+          echo "✓ Binary built successfully at ./client/bin/sqlrsync"
+          file ./client/bin/sqlrsync
+          ldd ./client/bin/sqlrsync || true
 
       - name: Build Client (Windows)
         if: matrix.os == 'windows'
