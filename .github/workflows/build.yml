@@ -49,8 +49,6 @@ jobs:
         uses: actions/setup-go@v4
         with:
           go-version: "1.21"
-      - name: Add safe Git directory
-        run: git config --global --add safe.directory /workspace
       - name: Install dependencies (Ubuntu)
         if: matrix.os == 'linux'
         run: |
@@ -186,6 +184,7 @@ jobs:
         run: |
           # Build client in Alpine container
           docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace alpine:latest sh -c "
+            git config --global --add safe.directory /workspace
             apk add --no-cache build-base go git &&
             cd client &&
             make build
