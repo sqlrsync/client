@@ -184,8 +184,8 @@ jobs:
         run: |
           # Build client in Alpine container
           docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace alpine:latest sh -c "
-            git config --global --add safe.directory /workspace
             apk add --no-cache build-base go git &&
+            git config --global --add safe.directory /workspace &&
             cd client &&
             make build
           "
