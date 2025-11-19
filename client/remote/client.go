@@ -1141,7 +1141,7 @@ func (c *Client) pingLoop() {
 	defer c.logger.Debug("Ping loop terminated")
 
 	// Use longer ping interval in subscribe mode to accommodate hibernated connections
-	pingInterval := 5 * time.Second
+	pingInterval := 4 * time.Minute
 	if c.config.Subscribe {
 		pingInterval = 25 * time.Minute
 		c.logger.Info("Subscribe mode: using 25-minute ping interval for hibernated connections")
@@ -1173,13 +1173,7 @@ func (c *Client) pingLoop() {
 				return
 			}
 
-			// Use longer ping timeout in subscribe mode
-			pingTimeout := 10 * time.Second
-			if c.config.Subscribe {
-				pingTimeout = 30 * time.Second
-			}
-
-			err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(pingTimeout))
+			err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
 			if err != nil {
 				c.logger.Error("Failed to send ping", zap.Error(err))
 				c.setError(err)
