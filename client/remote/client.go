@@ -1173,10 +1173,7 @@ func (c *Client) pingLoop() {
 				return
 			}
 
-			// Use longer ping timeout in subscribe mode
-			pingTimeout := pingInterval * 2
-
-			err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(pingTimeout))
+			err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
 			if err != nil {
 				c.logger.Error("Failed to send ping", zap.Error(err))
 				c.setError(err)
